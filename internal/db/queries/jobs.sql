@@ -1,3 +1,8 @@
+-- name: ListJobs :many
+SELECT * FROM jobs 
+ORDER BY id 
+LIMIT $1 OFFSET $2;
+
 -- name: GetJob :one
 SELECT * FROM jobs WHERE id = $1;
 

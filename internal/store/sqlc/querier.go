@@ -14,6 +14,7 @@ type Querier interface {
 	CreateOrUpdateJob(ctx context.Context, arg CreateOrUpdateJobParams) (Jobs, error)
 	DeleteJob(ctx context.Context, id uuid.UUID) error
 	GetJob(ctx context.Context, id uuid.UUID) (Jobs, error)
+	ListJobs(ctx context.Context, arg ListJobsParams) ([]Jobs, error)
 	UpdateJobNextRunTimeAndStatus(ctx context.Context, arg UpdateJobNextRunTimeAndStatusParams) error
 }
 

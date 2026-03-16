@@ -95,6 +95,50 @@ func (q *Queries) GetJob(ctx context.Context, id uuid.UUID) (Jobs, error) {
 	return i, err
 }
 
+const listJobs = `-- name: ListJobs :many
+SELECT id, name, description, type, schedule, last_run_time, next_run_time, payload, status, shard_id, inserted_at, updated_at FROM jobs 
+ORDER BY id 
+LIMIT $1 OFFSET $2
+`
+
+type ListJobsParams struct {
+	Limit  int32 `json:"limit"`
+	Offset int32 `json:"offset"`
+}
+
+func (q *Queries) ListJobs(ctx context.Context, arg ListJobsParams) ([]Jobs, error) {
+	rows, err := q.db.Query(ctx, listJobs, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Jobs{}
+	for rows.Next() {
+		var i Jobs
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Description,
+			&i.Type,
+			&i.Schedule,
+			&i.LastRunTime,
+			&i.NextRunTime,
+			&i.Payload,
+			&i.Status,
+			&i.ShardID,
+			&i.InsertedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const updateJobNextRunTimeAndStatus = `-- name: UpdateJobNextRunTimeAndStatus :exec
 UPDATE jobs 
 SET next_run_time = $2, 

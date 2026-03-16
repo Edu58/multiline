@@ -11,11 +11,12 @@ import (
 )
 
 type Store struct {
-	pool    *pgxpool.Pool
-	queries *sqlc.Queries
+	Pool    *pgxpool.Pool
+	Queries *sqlc.Queries
+	Logger  *logrus.Logger
 }
 
-func New(ctx context.Context, url string) (*Store, error) {
+func New(ctx context.Context, logger *logrus.Logger, url string) (*Store, error) {
 	config, err := pgxpool.ParseConfig(url)
 
 	if err != nil {
@@ -32,14 +33,14 @@ func New(ctx context.Context, url string) (*Store, error) {
 		return nil, err
 	}
 
-	return &Store{pool: pool, queries: sqlc.New(pool)}, nil
+	return &Store{Pool: pool, Logger: logger, Queries: sqlc.New(pool)}, nil
 }
 
 func (s *Store) WithTx(ctx context.Context, fn func(*sqlc.Queries) error) error {
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{})
 
 	if err != nil {
-		logrus.Errorf("Error happened: %v", err)
+		s.Logger.Errorf("Error happened: %v", err)
 		return err
 	}
 
@@ -50,7 +51,7 @@ func (s *Store) WithTx(ctx context.Context, fn func(*sqlc.Queries) error) error 
 		}
 	}()
 
-	q := s.queries.WithTx(tx)
+	q := s.Queries.WithTx(tx)
 
 	if err := fn(q); err != nil {
 		tx.Rollback(ctx)
@@ -61,5 +62,5 @@ func (s *Store) WithTx(ctx context.Context, fn func(*sqlc.Queries) error) error 
 }
 
 func (s *Store) Close() {
-	s.pool.Close()
+	s.Pool.Close()
 }

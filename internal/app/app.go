@@ -8,19 +8,22 @@ import (
 	"syscall"
 
 	"github.com/Edu58/multiline/config"
-	apphttp "github.com/Edu58/multiline/internal/app_http"
+	"github.com/Edu58/multiline/internal/controllers"
+	"github.com/Edu58/multiline/internal/services"
 	"github.com/Edu58/multiline/internal/store"
 	"github.com/sirupsen/logrus"
 )
 
 type App struct {
-	config *config.Config
-	store  *store.Store
-	server *http.Server
-	mux    *http.ServeMux
+	config      *config.Config
+	store       *store.Store
+	server      *http.Server
+	mux         *http.ServeMux
+	logger      *logrus.Logger
+	jobsService *services.JobsService
 }
 
-func NewApp(config *config.Config, store *store.Store) (*App, error) {
+func NewApp(store *store.Store, config *config.Config, logger *logrus.Logger) (*App, error) {
 	mux := http.NewServeMux()
 	addr := config.HOST + ":" + config.PORT
 
@@ -28,6 +31,7 @@ func NewApp(config *config.Config, store *store.Store) (*App, error) {
 		config: config,
 		store:  store,
 		mux:    mux,
+		logger: logger,
 		server: &http.Server{
 			Addr:    addr,
 			Handler: mux,
@@ -35,14 +39,18 @@ func NewApp(config *config.Config, store *store.Store) (*App, error) {
 	}, nil
 }
 
-func (app *App) Init() error {
-	logrus.Info("Setting up routes")
-	apphttp.NewDefaultHandler().RegisterRoutes(app.mux)
-	return nil
+func (app *App) InitServices() {
+	app.logger.Info("Setting up services")
+	app.jobsService = services.NewJobsService(app.store, app.logger)
+}
+
+func (app *App) InitHandlers() {
+	app.logger.Info("Setting up routes")
+	controllers.NewJobsController(app.logger, app.jobsService).RegisterRoutes(app.mux)
 }
 
 func (app *App) Start() error {
-	logrus.WithField("addr", app.server.Addr).Info("Starting server")
+	app.logger.WithField("addr", app.server.Addr).Info("Starting server")
 	return app.server.ListenAndServe()
 }
 
@@ -51,10 +59,10 @@ func (app *App) Shutdown(ctx context.Context, waitForShutdownCompletion chan str
 	signal.Notify(sigch, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-sigch
 
-	logrus.Printf("Got signal: %v . Server shutting down.", sig)
+	app.logger.Printf("Got signal: %v . Server shutting down.", sig)
 
 	if err := app.server.Shutdown(ctx); err != nil {
-		logrus.Errorf("Error during shutdown: %v", err)
+		app.logger.Errorf("Error during shutdown: %v", err)
 		return err
 	}
 
