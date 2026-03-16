@@ -29,8 +29,8 @@ func (c *JobsController) index(w http.ResponseWriter, r *http.Request) {
 		limitParam := r.URL.Query().Get("limit")
 		offsetParam := r.URL.Query().Get("offset")
 
-		limit, err := strconv.ParseInt(limitParam, 10, 32)
-		offset, err := strconv.ParseInt(offsetParam, 10, 32)
+		limit, _ := strconv.ParseInt(limitParam, 10, 32)
+		offset, _ := strconv.ParseInt(offsetParam, 10, 32)
 
 		jobs, err := c.jobsService.ListJobs(
 			r.Context(),
@@ -60,7 +60,7 @@ func (c *JobsController) index(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "error processing request", http.StatusInternalServerError)
 			return
 		}
-		
+
 		return
 	}
 }
