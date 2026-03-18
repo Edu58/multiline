@@ -15,7 +15,6 @@ import (
 	"github.com/Edu58/multiline/internal/store/sqlc"
 	"github.com/Edu58/multiline/pkg/logger"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 )
@@ -74,30 +73,30 @@ func TestJobsController_Index(t *testing.T) {
 		req = reqWithContextValue(tt.Limit, tt.Offset)
 		handler.ServeHTTP(recorder, req)
 
+		description1 := "Description1"
+		description2 := "Description2"
+		status := "active"
+
 		expectedJobs := []sqlc.Jobs{
 			{
 				ID:          uuid.New(),
 				Name:        "Job1",
-				Description: pgtype.Text{String: "Description1", Valid: true},
+				Description: &description1,
 				Type:        "type1",
 				Schedule:    "schedule1",
-				LastRunTime: pgtype.Timestamptz{Time: time.Now()},
-				NextRunTime: pgtype.Timestamptz{Time: time.Now()},
-				Payload:     nil,
-				Status:      pgtype.Text{String: "active"},
-				ShardID:     pgtype.Int4{Int32: 1},
+				NextRunTime: time.Now().UTC(),
+				Status:      &status,
+				ShardID:     1,
 			},
 			{
 				ID:          uuid.New(),
 				Name:        "Job2",
-				Description: pgtype.Text{String: "Description2", Valid: true},
+				Description: &description2,
 				Type:        "type2",
 				Schedule:    "schedule2",
-				LastRunTime: pgtype.Timestamptz{Time: time.Now()},
-				NextRunTime: pgtype.Timestamptz{Time: time.Now()},
-				Payload:     nil,
-				Status:      pgtype.Text{String: "active"},
-				ShardID:     pgtype.Int4{Int32: 2},
+				NextRunTime: time.Now().UTC(),
+				Status:      &status,
+				ShardID:     2,
 			},
 		}
 

@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/Edu58/multiline/config"
 	"github.com/Edu58/multiline/internal/store/sqlc"
@@ -99,9 +100,11 @@ func TestStore(t *testing.T) {
 			jobId := uuid.New()
 
 			_, err := q.CreateOrUpdateJob(context.Background(), store.CreateOrUpdateJobParams{
-				ID:       jobId,
-				Name:     "Test Job 1",
-				Schedule: "0 * * * *",
+				ID:          jobId,
+				Name:        "Test Job 1",
+				Schedule:    "0 * * * *",
+				NextRunTime: time.Now().UTC(),
+				ShardID:     1,
 			})
 
 			if err != nil {

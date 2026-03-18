@@ -5,21 +5,26 @@
 package sqlc
 
 import (
+	"time"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type Jobs struct {
-	ID          uuid.UUID          `json:"id"`
-	Name        string             `json:"name"`
-	Description pgtype.Text        `json:"description"`
-	Type        string             `json:"type"`
-	Schedule    string             `json:"schedule"`
-	LastRunTime pgtype.Timestamptz `json:"last_run_time"`
-	NextRunTime pgtype.Timestamptz `json:"next_run_time"`
-	Payload     []byte             `json:"payload"`
-	Status      pgtype.Text        `json:"status"`
-	ShardID     pgtype.Int4        `json:"shard_id"`
-	InsertedAt  pgtype.Timestamptz `json:"inserted_at"`
-	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	ID             uuid.UUID          `json:"id"`
+	Name           string             `json:"name"`
+	Description    *string            `json:"description"`
+	Type           string             `json:"type"`
+	Schedule       string             `json:"schedule"`
+	ScheduleType   *string            `json:"schedule_type"`
+	LastRunTime    pgtype.Timestamptz `json:"last_run_time"`
+	NextRunTime    time.Time          `json:"next_run_time"`
+	Payload        []byte             `json:"payload"`
+	Retries        *int32             `json:"retries"`
+	TimeoutSeconds *int32             `json:"timeout_seconds"`
+	Status         *string            `json:"status"`
+	ShardID        int32              `json:"shard_id"`
+	InsertedAt     pgtype.Timestamptz `json:"inserted_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
 }

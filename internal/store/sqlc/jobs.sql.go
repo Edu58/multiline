@@ -7,6 +7,7 @@ package sqlc
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -15,20 +16,20 @@ import (
 const createOrUpdateJob = `-- name: CreateOrUpdateJob :one
 INSERT INTO jobs (id, type, name, description, schedule, last_run_time, next_run_time, payload, status, shard_id) 
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-RETURNING id, name, description, type, schedule, last_run_time, next_run_time, payload, status, shard_id, inserted_at, updated_at
+RETURNING id, name, description, type, schedule, schedule_type, last_run_time, next_run_time, payload, retries, timeout_seconds, status, shard_id, inserted_at, updated_at
 `
 
 type CreateOrUpdateJobParams struct {
 	ID          uuid.UUID          `json:"id"`
 	Type        string             `json:"type"`
 	Name        string             `json:"name"`
-	Description pgtype.Text        `json:"description"`
+	Description *string            `json:"description"`
 	Schedule    string             `json:"schedule"`
 	LastRunTime pgtype.Timestamptz `json:"last_run_time"`
-	NextRunTime pgtype.Timestamptz `json:"next_run_time"`
+	NextRunTime time.Time          `json:"next_run_time"`
 	Payload     []byte             `json:"payload"`
-	Status      pgtype.Text        `json:"status"`
-	ShardID     pgtype.Int4        `json:"shard_id"`
+	Status      *string            `json:"status"`
+	ShardID     int32              `json:"shard_id"`
 }
 
 func (q *Queries) CreateOrUpdateJob(ctx context.Context, arg CreateOrUpdateJobParams) (Jobs, error) {
@@ -51,9 +52,12 @@ func (q *Queries) CreateOrUpdateJob(ctx context.Context, arg CreateOrUpdateJobPa
 		&i.Description,
 		&i.Type,
 		&i.Schedule,
+		&i.ScheduleType,
 		&i.LastRunTime,
 		&i.NextRunTime,
 		&i.Payload,
+		&i.Retries,
+		&i.TimeoutSeconds,
 		&i.Status,
 		&i.ShardID,
 		&i.InsertedAt,
@@ -72,7 +76,7 @@ func (q *Queries) DeleteJob(ctx context.Context, id uuid.UUID) error {
 }
 
 const getJob = `-- name: GetJob :one
-SELECT id, name, description, type, schedule, last_run_time, next_run_time, payload, status, shard_id, inserted_at, updated_at FROM jobs WHERE id = $1
+SELECT id, name, description, type, schedule, schedule_type, last_run_time, next_run_time, payload, retries, timeout_seconds, status, shard_id, inserted_at, updated_at FROM jobs WHERE id = $1
 `
 
 func (q *Queries) GetJob(ctx context.Context, id uuid.UUID) (Jobs, error) {
@@ -84,9 +88,12 @@ func (q *Queries) GetJob(ctx context.Context, id uuid.UUID) (Jobs, error) {
 		&i.Description,
 		&i.Type,
 		&i.Schedule,
+		&i.ScheduleType,
 		&i.LastRunTime,
 		&i.NextRunTime,
 		&i.Payload,
+		&i.Retries,
+		&i.TimeoutSeconds,
 		&i.Status,
 		&i.ShardID,
 		&i.InsertedAt,
@@ -96,7 +103,7 @@ func (q *Queries) GetJob(ctx context.Context, id uuid.UUID) (Jobs, error) {
 }
 
 const listJobs = `-- name: ListJobs :many
-SELECT id, name, description, type, schedule, last_run_time, next_run_time, payload, status, shard_id, inserted_at, updated_at FROM jobs 
+SELECT id, name, description, type, schedule, schedule_type, last_run_time, next_run_time, payload, retries, timeout_seconds, status, shard_id, inserted_at, updated_at FROM jobs 
 ORDER BY id 
 LIMIT $1 OFFSET $2
 `
@@ -121,9 +128,12 @@ func (q *Queries) ListJobs(ctx context.Context, arg ListJobsParams) ([]Jobs, err
 			&i.Description,
 			&i.Type,
 			&i.Schedule,
+			&i.ScheduleType,
 			&i.LastRunTime,
 			&i.NextRunTime,
 			&i.Payload,
+			&i.Retries,
+			&i.TimeoutSeconds,
 			&i.Status,
 			&i.ShardID,
 			&i.InsertedAt,
@@ -148,10 +158,10 @@ WHERE id = $1
 `
 
 type UpdateJobNextRunTimeAndStatusParams struct {
-	ID          uuid.UUID          `json:"id"`
-	NextRunTime pgtype.Timestamptz `json:"next_run_time"`
-	Payload     []byte             `json:"payload"`
-	Status      pgtype.Text        `json:"status"`
+	ID          uuid.UUID `json:"id"`
+	NextRunTime time.Time `json:"next_run_time"`
+	Payload     []byte    `json:"payload"`
+	Status      *string   `json:"status"`
 }
 
 func (q *Queries) UpdateJobNextRunTimeAndStatus(ctx context.Context, arg UpdateJobNextRunTimeAndStatusParams) error {

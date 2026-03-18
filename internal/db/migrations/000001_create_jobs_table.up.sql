@@ -4,11 +4,14 @@ CREATE TABLE jobs (
     description TEXT,
     type VARCHAR(20) NOT NULL,
     schedule VARCHAR(50) NOT NULL,
+    schedule_type VARCHAR(50) DEFAULT 'once',
     last_run_time TIMESTAMPTZ,
-    next_run_time TIMESTAMPTZ,
-    payload JSON,
+    next_run_time TIMESTAMPTZ NOT NULL,
+    payload JSONB,
+    retries INT DEFAULT 3,
+    timeout_seconds INT DEFAULT 15,
     status VARCHAR(20) DEFAULT 'pending',
-    shard_id INT,
+    shard_id INT NOT NULL,
     inserted_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
