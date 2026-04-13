@@ -10,8 +10,8 @@ type Config struct {
 	DSN_URL        string `mapstructure:"dsn_url"`
 	DSN_OPTIONS    string `mapstructure:"dsn_options"`
 	MIGRATIONS_URL string `mapstructure:"migrations_url"`
-	LOG_LEVEL string `mapstructure:"log_level"`
-	LOG_OUT string `mapstructure:"log_out"`
+	LOG_LEVEL      string `mapstructure:"log_level"`
+	LOG_OUT        string `mapstructure:"log_out"`
 }
 
 func LoadConfig(dir string, configName string, configType string) (config Config, err error) {

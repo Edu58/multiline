@@ -6,6 +6,7 @@ import (
 )
 
 var STRING_GENERATOR_LENGTH_ERROR = errors.New("n should be > 1")
+
 const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 func RandomString(n int) (string, error) {
