@@ -2,7 +2,6 @@ package scheduler
 
 import (
 	"context"
-	"encoding/json"
 	"log"
 	"time"
 
@@ -131,17 +130,10 @@ func (s *Scheduler) AddJobs(jobs []sqlc.Jobs) {
 	s.logger.Info("Adding %d jobs to timewheel", len(jobs))
 
 	for _, job := range jobs {
-		var payload map[string]any
-
-		if err := json.Unmarshal(job.Payload, &payload); err != nil {
-			s.logger.WithError(err).Error("error marshalling job payload")
-			continue
-		}
-
 		s.TimingWheel.AddJob(&Job{
 			id:         job.ID,
 			jobType:    job.Type,
-			payload:    payload,
+			payload:    job.Payload,
 			expiration: job.NextRunTime.Unix(),
 		})
 	}

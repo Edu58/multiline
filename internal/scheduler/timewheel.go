@@ -4,6 +4,7 @@ package scheduler
 import (
 	"container/list"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -18,7 +19,7 @@ type SchedulerOpts func(*TimeWheel) *TimeWheel
 type Job struct {
 	id         uuid.UUID
 	jobType    string
-	payload    map[string]any
+	payload    json.RawMessage
 	expiration int64
 	element    *list.Element
 	bucket     *Bucket
