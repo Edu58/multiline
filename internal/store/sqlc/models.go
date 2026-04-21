@@ -5,6 +5,7 @@
 package sqlc
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -13,18 +14,21 @@ import (
 
 type Jobs struct {
 	ID             uuid.UUID          `json:"id"`
-	Name           string             `json:"name"`
+	Name           *string            `json:"name"`
 	Description    *string            `json:"description"`
 	Type           string             `json:"type"`
-	Schedule       string             `json:"schedule"`
+	Schedule       *string            `json:"schedule"`
 	ScheduleType   *string            `json:"schedule_type"`
 	LastRunTime    pgtype.Timestamptz `json:"last_run_time"`
 	NextRunTime    time.Time          `json:"next_run_time"`
-	Payload        []byte             `json:"payload"`
+	Payload        json.RawMessage    `json:"payload"`
+	LastRunResult  json.RawMessage    `json:"last_run_result"`
 	Retries        *int32             `json:"retries"`
 	TimeoutSeconds *int32             `json:"timeout_seconds"`
 	Status         *string            `json:"status"`
 	ShardID        int32              `json:"shard_id"`
+	StartedAt      pgtype.Timestamptz `json:"started_at"`
+	CompletedAt    pgtype.Timestamptz `json:"completed_at"`
 	InsertedAt     pgtype.Timestamptz `json:"inserted_at"`
 	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
 }

@@ -35,18 +35,22 @@ func main() {
 		logger.Fatalf("Could create app with err: %v", err)
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+
+	app.InitScheduler(ctx)
 	app.InitServices()
 	app.InitHandlers()
 
 	waitForShutdownCompletion := make(chan struct{})
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctxShutdown, shutdownCancel := context.WithTimeout(context.Background(), 60*time.Second)
 
-	go app.Shutdown(ctx, waitForShutdownCompletion)
-	defer cancel()
+	go app.Shutdown(ctxShutdown, waitForShutdownCompletion)
 
 	if err := app.Start(); err != nil {
 		logger.Fatal(err)
 	}
 
 	<-waitForShutdownCompletion
+	cancel()
+	shutdownCancel()
 }

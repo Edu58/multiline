@@ -7,6 +7,7 @@ package sqlc
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,27 +15,26 @@ import (
 )
 
 const createOrUpdateJob = `-- name: CreateOrUpdateJob :one
-INSERT INTO jobs (id, type, name, description, schedule, last_run_time, next_run_time, payload, status, shard_id) 
+INSERT INTO jobs (type, name, description, schedule, last_run_time, next_run_time, payload, shard_id, started_at, completed_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-RETURNING id, name, description, type, schedule, schedule_type, last_run_time, next_run_time, payload, retries, timeout_seconds, status, shard_id, inserted_at, updated_at
+RETURNING id, name, description, type, schedule, schedule_type, last_run_time, next_run_time, payload, last_run_result, retries, timeout_seconds, status, shard_id, started_at, completed_at, inserted_at, updated_at
 `
 
 type CreateOrUpdateJobParams struct {
-	ID          uuid.UUID          `json:"id"`
 	Type        string             `json:"type"`
-	Name        string             `json:"name"`
+	Name        *string            `json:"name"`
 	Description *string            `json:"description"`
-	Schedule    string             `json:"schedule"`
+	Schedule    *string            `json:"schedule"`
 	LastRunTime pgtype.Timestamptz `json:"last_run_time"`
 	NextRunTime time.Time          `json:"next_run_time"`
-	Payload     []byte             `json:"payload"`
-	Status      *string            `json:"status"`
+	Payload     json.RawMessage    `json:"payload"`
 	ShardID     int32              `json:"shard_id"`
+	StartedAt   pgtype.Timestamptz `json:"started_at"`
+	CompletedAt pgtype.Timestamptz `json:"completed_at"`
 }
 
 func (q *Queries) CreateOrUpdateJob(ctx context.Context, arg CreateOrUpdateJobParams) (Jobs, error) {
 	row := q.db.QueryRow(ctx, createOrUpdateJob,
-		arg.ID,
 		arg.Type,
 		arg.Name,
 		arg.Description,
@@ -42,8 +42,9 @@ func (q *Queries) CreateOrUpdateJob(ctx context.Context, arg CreateOrUpdateJobPa
 		arg.LastRunTime,
 		arg.NextRunTime,
 		arg.Payload,
-		arg.Status,
 		arg.ShardID,
+		arg.StartedAt,
+		arg.CompletedAt,
 	)
 	var i Jobs
 	err := row.Scan(
@@ -56,10 +57,13 @@ func (q *Queries) CreateOrUpdateJob(ctx context.Context, arg CreateOrUpdateJobPa
 		&i.LastRunTime,
 		&i.NextRunTime,
 		&i.Payload,
+		&i.LastRunResult,
 		&i.Retries,
 		&i.TimeoutSeconds,
 		&i.Status,
 		&i.ShardID,
+		&i.StartedAt,
+		&i.CompletedAt,
 		&i.InsertedAt,
 		&i.UpdatedAt,
 	)
@@ -76,7 +80,9 @@ func (q *Queries) DeleteJob(ctx context.Context, id uuid.UUID) error {
 }
 
 const getJob = `-- name: GetJob :one
-SELECT id, name, description, type, schedule, schedule_type, last_run_time, next_run_time, payload, retries, timeout_seconds, status, shard_id, inserted_at, updated_at FROM jobs WHERE id = $1
+SELECT id, name, description, type, schedule, schedule_type, last_run_time, next_run_time, payload, last_run_result, retries, timeout_seconds, status, shard_id, started_at, completed_at, inserted_at, updated_at FROM jobs 
+WHERE id = $1 
+ORDER BY next_run_time ASC
 `
 
 func (q *Queries) GetJob(ctx context.Context, id uuid.UUID) (Jobs, error) {
@@ -92,19 +98,159 @@ func (q *Queries) GetJob(ctx context.Context, id uuid.UUID) (Jobs, error) {
 		&i.LastRunTime,
 		&i.NextRunTime,
 		&i.Payload,
+		&i.LastRunResult,
 		&i.Retries,
 		&i.TimeoutSeconds,
 		&i.Status,
 		&i.ShardID,
+		&i.StartedAt,
+		&i.CompletedAt,
 		&i.InsertedAt,
 		&i.UpdatedAt,
 	)
 	return i, err
 }
 
+const getNext24HourJobs = `-- name: GetNext24HourJobs :many
+SELECT id, name, description, type, schedule, schedule_type, last_run_time, next_run_time, payload, last_run_result, retries, timeout_seconds, status, shard_id, started_at, completed_at, inserted_at, updated_at FROM jobs
+WHERE next_run_time BETWEEN (NOW() + INTERVAL '61 minute' )
+AND (NOW() + INTERVAL '1441 minutes')
+ORDER BY next_run_time ASC
+`
+
+func (q *Queries) GetNext24HourJobs(ctx context.Context) ([]Jobs, error) {
+	rows, err := q.db.Query(ctx, getNext24HourJobs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Jobs{}
+	for rows.Next() {
+		var i Jobs
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Description,
+			&i.Type,
+			&i.Schedule,
+			&i.ScheduleType,
+			&i.LastRunTime,
+			&i.NextRunTime,
+			&i.Payload,
+			&i.LastRunResult,
+			&i.Retries,
+			&i.TimeoutSeconds,
+			&i.Status,
+			&i.ShardID,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.InsertedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getNextHourJobs = `-- name: GetNextHourJobs :many
+SELECT id, name, description, type, schedule, schedule_type, last_run_time, next_run_time, payload, last_run_result, retries, timeout_seconds, status, shard_id, started_at, completed_at, inserted_at, updated_at FROM jobs
+WHERE next_run_time BETWEEN (NOW() + INTERVAL '1 minute' )
+AND (NOW() + INTERVAL '61 minutes')
+ORDER BY next_run_time ASC
+`
+
+func (q *Queries) GetNextHourJobs(ctx context.Context) ([]Jobs, error) {
+	rows, err := q.db.Query(ctx, getNextHourJobs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Jobs{}
+	for rows.Next() {
+		var i Jobs
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Description,
+			&i.Type,
+			&i.Schedule,
+			&i.ScheduleType,
+			&i.LastRunTime,
+			&i.NextRunTime,
+			&i.Payload,
+			&i.LastRunResult,
+			&i.Retries,
+			&i.TimeoutSeconds,
+			&i.Status,
+			&i.ShardID,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.InsertedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getNextMinuteJobs = `-- name: GetNextMinuteJobs :many
+SELECT id, name, description, type, schedule, schedule_type, last_run_time, next_run_time, payload, last_run_result, retries, timeout_seconds, status, shard_id, started_at, completed_at, inserted_at, updated_at FROM jobs
+WHERE next_run_time < NOW() + INTERVAL '1 minute'
+ORDER BY next_run_time ASC
+`
+
+func (q *Queries) GetNextMinuteJobs(ctx context.Context) ([]Jobs, error) {
+	rows, err := q.db.Query(ctx, getNextMinuteJobs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Jobs{}
+	for rows.Next() {
+		var i Jobs
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Description,
+			&i.Type,
+			&i.Schedule,
+			&i.ScheduleType,
+			&i.LastRunTime,
+			&i.NextRunTime,
+			&i.Payload,
+			&i.LastRunResult,
+			&i.Retries,
+			&i.TimeoutSeconds,
+			&i.Status,
+			&i.ShardID,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.InsertedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listJobs = `-- name: ListJobs :many
-SELECT id, name, description, type, schedule, schedule_type, last_run_time, next_run_time, payload, retries, timeout_seconds, status, shard_id, inserted_at, updated_at FROM jobs 
-ORDER BY id 
+SELECT id, name, description, type, schedule, schedule_type, last_run_time, next_run_time, payload, last_run_result, retries, timeout_seconds, status, shard_id, started_at, completed_at, inserted_at, updated_at FROM jobs
+ORDER BY next_run_time ASC
 LIMIT $1 OFFSET $2
 `
 
@@ -132,10 +278,13 @@ func (q *Queries) ListJobs(ctx context.Context, arg ListJobsParams) ([]Jobs, err
 			&i.LastRunTime,
 			&i.NextRunTime,
 			&i.Payload,
+			&i.LastRunResult,
 			&i.Retries,
 			&i.TimeoutSeconds,
 			&i.Status,
 			&i.ShardID,
+			&i.StartedAt,
+			&i.CompletedAt,
 			&i.InsertedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -149,27 +298,64 @@ func (q *Queries) ListJobs(ctx context.Context, arg ListJobsParams) ([]Jobs, err
 	return items, nil
 }
 
-const updateJobNextRunTimeAndStatus = `-- name: UpdateJobNextRunTimeAndStatus :exec
-UPDATE jobs 
-SET next_run_time = $2, 
-    payload = $3, 
-    status = $4 
+const updateJobCompletedAt = `-- name: UpdateJobCompletedAt :exec
+UPDATE jobs
+SET completed_at = $2,
+next_run_time = $3,
+status = $4,
+last_run_result = $5
 WHERE id = $1
 `
 
-type UpdateJobNextRunTimeAndStatusParams struct {
-	ID          uuid.UUID `json:"id"`
-	NextRunTime time.Time `json:"next_run_time"`
-	Payload     []byte    `json:"payload"`
-	Status      *string   `json:"status"`
+type UpdateJobCompletedAtParams struct {
+	ID            uuid.UUID          `json:"id"`
+	CompletedAt   pgtype.Timestamptz `json:"completed_at"`
+	NextRunTime   time.Time          `json:"next_run_time"`
+	Status        *string            `json:"status"`
+	LastRunResult json.RawMessage    `json:"last_run_result"`
 }
 
-func (q *Queries) UpdateJobNextRunTimeAndStatus(ctx context.Context, arg UpdateJobNextRunTimeAndStatusParams) error {
-	_, err := q.db.Exec(ctx, updateJobNextRunTimeAndStatus,
+func (q *Queries) UpdateJobCompletedAt(ctx context.Context, arg UpdateJobCompletedAtParams) error {
+	_, err := q.db.Exec(ctx, updateJobCompletedAt,
 		arg.ID,
+		arg.CompletedAt,
 		arg.NextRunTime,
-		arg.Payload,
 		arg.Status,
+		arg.LastRunResult,
 	)
+	return err
+}
+
+const updateJobShardIs = `-- name: UpdateJobShardIs :exec
+UPDATE jobs
+SET shard_id = $2
+WHERE id = $1
+`
+
+type UpdateJobShardIsParams struct {
+	ID      uuid.UUID `json:"id"`
+	ShardID int32     `json:"shard_id"`
+}
+
+func (q *Queries) UpdateJobShardIs(ctx context.Context, arg UpdateJobShardIsParams) error {
+	_, err := q.db.Exec(ctx, updateJobShardIs, arg.ID, arg.ShardID)
+	return err
+}
+
+const updateJobStartedAt = `-- name: UpdateJobStartedAt :exec
+UPDATE jobs
+SET started_at = $2,
+status = $3
+WHERE id = $1
+`
+
+type UpdateJobStartedAtParams struct {
+	ID        uuid.UUID          `json:"id"`
+	StartedAt pgtype.Timestamptz `json:"started_at"`
+	Status    *string            `json:"status"`
+}
+
+func (q *Queries) UpdateJobStartedAt(ctx context.Context, arg UpdateJobStartedAtParams) error {
+	_, err := q.db.Exec(ctx, updateJobStartedAt, arg.ID, arg.StartedAt, arg.Status)
 	return err
 }

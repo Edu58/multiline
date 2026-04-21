@@ -1,204 +1,148 @@
-// Package scheduler implements a scheduler using the time wheel algorithm
 package scheduler
 
 import (
-	"container/list"
-	"errors"
-	"fmt"
+	"context"
+	"encoding/json"
 	"log"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/Edu58/multiline/internal/store"
+	"github.com/Edu58/multiline/internal/store/sqlc"
+	"github.com/sirupsen/logrus"
 )
 
-type SchedulerOpts func(*TimeWheelScheduler) *TimeWheelScheduler
+type JOBS_RANGE int
 
-// Job is the unit of work to be done/scheduled/executed
-type Job struct {
-	id         uuid.UUID
-	jobType    string
-	payload    map[string]any
-	expiration int64
-	element    *list.Element
-	bucket     *Bucket
+const (
+	SECONDS JOBS_RANGE = iota
+	MINUTES
+	HOURS
+)
+
+type Scheduler struct {
+	ID           any
+	ShardID      any
+	TimingWheel  *TimeWheel
+	store        *store.Store
+	PollInterval time.Duration
+	pollTracker  map[string]int64
+	logger       *logrus.Logger
 }
 
-// Bucket hold a collection of jobs in the same range e.g hours bucket, minutes bucket
-// It holds a pointer to the first item on the execution list and a mutex
-type Bucket struct {
-	jobs *list.List
-}
+func NewScheduler(id any, shardID any, pollInterval time.Duration, store *store.Store, logger *logrus.Logger) *Scheduler {
+	ticker := time.NewTicker(time.Second)
+	now := time.Now().Unix()
 
-// Wheel hold a slice of buckets e.g. hour bucket, minute bucket
-// size is the max number of buckets available in this Wheel
-// interval is the takes to cover the wheel. e.g for 1 minute is 60 intervals
-// lower is the closest smaller bucket e.g. for minutes bucket, the lower bucket is the seconds bucket
-type Wheel struct {
-	buckets  []*Bucket
-	size     int64
-	interval int64
-	position int64
-	lower    *Wheel
-	upper    *Wheel
-}
+	timeWheel := NewTimeWheelScheduler(ticker)
+	timeWheel.WithSecondsWheel(NewWheel(60, time.Second))
+	timeWheel.WithMinutesWheel(NewWheel(60, time.Minute))
+	timeWheel.WithHoursWheel(NewWheel(24, time.Hour))
 
-// TimeWheelScheduler holds all the wheels, a ticker and a channel to send a stop signal for graceful shutdown
-type TimeWheelScheduler struct {
-	hours   *Wheel
-	minutes *Wheel
-	seconds *Wheel
+	pollTracker := map[string]int64{
+		"seconds": now,
+		"minutes": now,
+		"hours":   now,
+	}
 
-	tick *time.Ticker
-	stop chan struct{}
-}
-
-func NewJob(jobType string, payload map[string]any, expiration time.Duration) *Job {
-	after := time.Now().UTC().Add(expiration).UnixNano()
-	return &Job{id: uuid.New(), jobType: jobType, expiration: after, payload: payload}
-}
-
-func NewBucket() *Bucket {
-	return &Bucket{jobs: list.New()}
-}
-
-func (b *Bucket) AddJob(j *Job) {
-	node := b.jobs.PushBack(j)
-	j.element = node
-	j.bucket = b
-}
-
-func (b *Bucket) Flush(f func(j *Job)) {
-	for j := b.jobs.Front(); j != nil; {
-		next := j.Next()
-		job := j.Value.(*Job)
-		b.jobs.Remove(j)
-		job.element = nil
-		job.bucket = nil
-		f(job)
-		j = next
+	return &Scheduler{
+		ID:           id,
+		ShardID:      shardID,
+		TimingWheel:  timeWheel,
+		store:        store,
+		PollInterval: pollInterval,
+		pollTracker:  pollTracker,
+		logger:       logger,
 	}
 }
 
-func (b *Bucket) CancelJob(j *Job) {
-	b.jobs.Remove(j.element)
-	j.element = nil
-	j.bucket = nil
+func (s *Scheduler) Start(ctx context.Context) {
+	go s.TimingWheel.Start(ctx)
+	go s.Poll(ctx)
 }
 
-func NewWheel(size int64, interval time.Duration) *Wheel {
-	wheel := &Wheel{
-		buckets:  make([]*Bucket, size),
-		size:     size,
-		interval: int64(interval),
-	}
+func (s *Scheduler) Poll(ctx context.Context) {
+	ticker := time.NewTicker(s.PollInterval)
+	defer ticker.Stop()
 
-	for i := range size {
-		wheel.buckets[i] = NewBucket()
-	}
-
-	return wheel
-}
-
-func (w *Wheel) AddJob(j *Job) {
-	pos := calculateBucketIdx(w.position, w.interval, w.size, j.expiration)
-
-	log.Printf("inserting job %s to position %d: ", j.id, pos)
-
-	w.buckets[pos].AddJob(j)
-}
-
-func NewTimeWheelScheduler(ticker *time.Ticker, stop chan struct{}, opts ...SchedulerOpts) *TimeWheelScheduler {
-	scheduler := &TimeWheelScheduler{
-		tick: ticker,
-		stop: stop,
-	}
-
-	for _, opt := range opts {
-		opt(scheduler)
-	}
-
-	return scheduler
-}
-
-func (tw *TimeWheelScheduler) WithHoursWheel(wheel *Wheel) *TimeWheelScheduler {
-	tw.hours = wheel
-	return tw
-}
-
-func (tw *TimeWheelScheduler) WithMinutesWheel(wheel *Wheel) *TimeWheelScheduler {
-	tw.minutes = wheel
-	return tw
-}
-
-func (tw *TimeWheelScheduler) WithSecondsWheel(wheel *Wheel) *TimeWheelScheduler {
-	tw.seconds = wheel
-	return tw
-}
-
-func (tw *TimeWheelScheduler) AddJob(job *Job) error {
-	if job == nil {
-		return errors.New("job cannot be nil")
-	}
-
-	now := time.Now().UTC().UnixNano()
-	diff := job.expiration - now
-
-	switch {
-	case diff < int64(time.Minute):
-		log.Println("Job added to seconds bucket")
-		tw.seconds.AddJob(job)
-	case diff < int64(time.Hour):
-		log.Println("Job added to minutes bucket")
-		tw.minutes.AddJob(job)
-	default:
-		log.Println("Job added to hours bucket")
-		tw.hours.AddJob(job)
-	}
-
-	return nil
-}
-
-func (tw *TimeWheelScheduler) Tick(wheel *Wheel) {
-	pos := wheel.position
-	bucket := wheel.buckets[pos]
-
-	log.Println("Processing bucket: ", bucket)
-
-	bucket.Flush(func(j *Job) {
-		// Checks if we're in the seconds bucket
-		// If not, we cascade the job/reassign
-		if wheel.lower == nil {
-			go func(j *Job) {
-				fmt.Println("Executed job ID: ", j.id.ID())
-			}(j)
-		} else {
-			tw.AddJob(j)
-		}
-	})
-
-	wheel.position = (pos + 1) % wheel.size
-
-	if wheel.position == 0 && wheel.upper != nil {
-		tw.Tick(wheel.upper)
-	}
-}
-
-func (tw *TimeWheelScheduler) Start() {
 	for {
 		select {
-		case <-tw.tick.C:
-			tw.Tick(tw.seconds)
-		default:
+		case <-ctx.Done():
+			log.Println("Canceling poll")
 			return
+		case <-ticker.C:
+
+			now := time.Now().Unix()
+
+			if now-s.pollTracker["minutes"] >= 60 {
+				s.GetJobs(ctx, MINUTES)
+				s.pollTracker["minutes"] = now
+			}
+
+			if now-s.pollTracker["hours"] >= 3600 {
+				s.GetJobs(ctx, HOURS)
+				s.pollTracker["hours"] = now
+			}
+
+			s.GetJobs(ctx, SECONDS)
+			s.pollTracker["seconds"] = now
 		}
 	}
 }
 
-func calculateBucketIdx(position, interval, size, expiration int64) int64 {
-	now := time.Now().UTC().UnixNano()
-	diff := expiration - now
+func (s *Scheduler) GetJobs(ctx context.Context, r JOBS_RANGE) {
 
-	ticks := diff / interval
-	pos := (position + ticks) % size
-	return pos
+	switch r {
+	case MINUTES:
+		jobs, err := s.store.Queries.GetNextHourJobs(ctx)
+
+		if err != nil {
+			s.logger.WithError(err).Error("error getting next hour(minutes bucket) jobs")
+			ctx.Done()
+		}
+
+		s.AddJobs(jobs)
+
+	case HOURS:
+		jobs, err := s.store.Queries.GetNext24HourJobs(ctx)
+
+		if err != nil {
+			s.logger.WithError(err).Error("error getting next 24 hours(hours bucket) jobs")
+			ctx.Done()
+		}
+
+		s.AddJobs(jobs)
+	default:
+		jobs, err := s.store.Queries.GetNextMinuteJobs(ctx)
+
+		if err != nil {
+			s.logger.WithError(err).Error("error getting next minute(seconds bucket) jobs")
+			ctx.Done()
+		}
+
+		s.AddJobs(jobs)
+	}
+}
+
+func (s *Scheduler) AddJobs(jobs []sqlc.Jobs) {
+	if len(jobs) < 1 {
+		return
+	}
+
+	s.logger.Info("Adding %d jobs to timewheel", len(jobs))
+
+	for _, job := range jobs {
+		var payload map[string]any
+
+		if err := json.Unmarshal(job.Payload, &payload); err != nil {
+			s.logger.WithError(err).Error("error marshalling job payload")
+			continue
+		}
+
+		s.TimingWheel.AddJob(&Job{
+			id:         job.ID,
+			jobType:    job.Type,
+			payload:    payload,
+			expiration: job.NextRunTime.Unix(),
+		})
+	}
 }

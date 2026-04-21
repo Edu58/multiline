@@ -6,9 +6,11 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/Edu58/multiline/config"
 	"github.com/Edu58/multiline/internal/controllers"
+	"github.com/Edu58/multiline/internal/scheduler"
 	"github.com/Edu58/multiline/internal/services"
 	"github.com/Edu58/multiline/internal/store"
 	"github.com/sirupsen/logrus"
@@ -21,11 +23,12 @@ type App struct {
 	mux         *http.ServeMux
 	logger      *logrus.Logger
 	jobsService *services.JobsService
+	scheduler   *scheduler.Scheduler
 }
 
 func NewApp(store *store.Store, config *config.Config, logger *logrus.Logger) (*App, error) {
-	mux := http.NewServeMux()
 	addr := config.HOST + ":" + config.PORT
+	mux := http.NewServeMux()
 
 	return &App{
 		config: config,
@@ -39,9 +42,16 @@ func NewApp(store *store.Store, config *config.Config, logger *logrus.Logger) (*
 	}, nil
 }
 
+func (app *App) InitScheduler(ctx context.Context) {
+	app.logger.Info("Setting up scheduler")
+	scheduler := scheduler.NewScheduler("Test", 1, time.Second*3, app.store, app.logger)
+	scheduler.Start(ctx)
+	app.scheduler = scheduler
+}
+
 func (app *App) InitServices() {
 	app.logger.Info("Setting up services")
-	app.jobsService = services.NewJobsService(app.store, app.logger)
+	app.jobsService = services.NewJobsService(app.store, app.scheduler, app.logger)
 }
 
 func (app *App) InitHandlers() {
