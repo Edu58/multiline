@@ -6,11 +6,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
 	"time"
 
+	"github.com/Edu58/multiline/internal/ptr"
+	"github.com/Edu58/multiline/internal/store"
+	"github.com/Edu58/multiline/internal/store/sqlc"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/sirupsen/logrus"
 )
 
 type SchedulerOpts func(*TimeWheel) *TimeWheel
@@ -46,14 +50,17 @@ type Wheel struct {
 
 // TimeWheel holds all the wheels, a ticker and a channel to send a stop signal for graceful shutdown
 type TimeWheel struct {
+	store   *store.Store
+	logger  *logrus.Logger
 	hours   *Wheel
 	minutes *Wheel
 	seconds *Wheel
 
 	tick *time.Ticker
+	ctx  context.Context
 }
 
-func NewJob(jobType string, payload map[string]any, expiration time.Duration) *Job {
+func NewJob(jobType string, payload json.RawMessage, expiration time.Duration) *Job {
 	after := time.Now().UTC().Add(expiration).Unix()
 	return &Job{id: uuid.New(), jobType: jobType, expiration: after, payload: payload}
 }
@@ -108,8 +115,8 @@ func (w *Wheel) AddJob(j *Job) {
 	w.buckets[pos].AddJob(j)
 }
 
-func NewTimeWheelScheduler(ticker *time.Ticker, opts ...SchedulerOpts) *TimeWheel {
-	scheduler := &TimeWheel{tick: ticker}
+func NewTimeWheelScheduler(ctx context.Context, ticker *time.Ticker, store *store.Store, logger *logrus.Logger, opts ...SchedulerOpts) *TimeWheel {
+	scheduler := &TimeWheel{ctx: ctx, tick: ticker, store: store, logger: logger}
 
 	for _, opt := range opts {
 		opt(scheduler)
@@ -166,7 +173,18 @@ func (tw *TimeWheel) Tick(wheel *Wheel) {
 		// If not, we cascade the job/reassign
 		if wheel.lower == nil {
 			go func(j *Job) {
-				fmt.Println("Executed job ID: ", j.id.ID())
+				err := tw.store.Queries.UpdateJobStartedAt(tw.ctx, sqlc.UpdateJobStartedAtParams{
+					ID:        j.id,
+					StartedAt: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true},
+					Status:    ptr.Of("executing"),
+				})
+
+				if err != nil {
+					tw.logger.WithError(err).Error("Error updating executed job status")
+				} else {
+					tw.logger.WithField("JobId", j.id.ID()).Print("Executed job")
+				}
+
 			}(j)
 		} else {
 			tw.AddJob(j)
@@ -181,11 +199,11 @@ func (tw *TimeWheel) Tick(wheel *Wheel) {
 }
 
 func (tw *TimeWheel) Start(ctx context.Context) {
-	defer tw.tick.Stop()
-
 	for {
 		select {
 		case <-ctx.Done():
+			tw.logger.Info("canceling timewheel ticker")
+			tw.tick.Stop()
 
 			return
 		case <-tw.tick.C:

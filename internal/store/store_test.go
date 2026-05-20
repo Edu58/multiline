@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Edu58/multiline/config"
+	"github.com/Edu58/multiline/internal/ptr"
 	"github.com/Edu58/multiline/internal/store/sqlc"
 	store "github.com/Edu58/multiline/internal/store/sqlc"
 	"github.com/Edu58/multiline/pkg/logger"
@@ -100,9 +101,8 @@ func TestStore(t *testing.T) {
 			jobId := uuid.New()
 
 			_, err := q.CreateOrUpdateJob(context.Background(), store.CreateOrUpdateJobParams{
-				ID:          jobId,
-				Name:        "Test Job 1",
-				Schedule:    "0 * * * *",
+				Name:        ptr.Of("Test Job 1"),
+				Schedule:    ptr.Of("0 * * * *"),
 				NextRunTime: time.Now().UTC(),
 				ShardID:     1,
 			})
@@ -124,9 +124,8 @@ func TestStore(t *testing.T) {
 			assert.NoError(t, err, "transaction failed: %v", err)
 
 			_, err = q.CreateOrUpdateJob(context.Background(), store.CreateOrUpdateJobParams{
-				ID:       uuid.Nil,
 				Type:     typeStr,
-				Schedule: "0 * * * *",
+				Schedule: ptr.Of("0 * * * *"),
 			})
 
 			return err

@@ -14,9 +14,8 @@ type Querier interface {
 	CreateOrUpdateJob(ctx context.Context, arg CreateOrUpdateJobParams) (Jobs, error)
 	DeleteJob(ctx context.Context, id uuid.UUID) error
 	GetJob(ctx context.Context, id uuid.UUID) (Jobs, error)
-	GetNext24HourJobs(ctx context.Context) ([]Jobs, error)
-	GetNextHourJobs(ctx context.Context) ([]Jobs, error)
-	GetNextMinuteJobs(ctx context.Context) ([]Jobs, error)
+	GetJobsByWindow(ctx context.Context, arg GetJobsByWindowParams) ([]Jobs, error)
+	GetNextMinuteJobs(ctx context.Context, arg GetNextMinuteJobsParams) ([]Jobs, error)
 	ListJobs(ctx context.Context, arg ListJobsParams) ([]Jobs, error)
 	UpdateJobCompletedAt(ctx context.Context, arg UpdateJobCompletedAtParams) error
 	UpdateJobShardIs(ctx context.Context, arg UpdateJobShardIsParams) error

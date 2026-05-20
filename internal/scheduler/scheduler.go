@@ -2,9 +2,9 @@ package scheduler
 
 import (
 	"context"
-	"log"
 	"time"
 
+	"github.com/Edu58/multiline/internal/ptr"
 	"github.com/Edu58/multiline/internal/store"
 	"github.com/Edu58/multiline/internal/store/sqlc"
 	"github.com/sirupsen/logrus"
@@ -26,13 +26,14 @@ type Scheduler struct {
 	PollInterval time.Duration
 	pollTracker  map[string]int64
 	logger       *logrus.Logger
+	ctx          context.Context
 }
 
-func NewScheduler(id any, shardID any, pollInterval time.Duration, store *store.Store, logger *logrus.Logger) *Scheduler {
+func NewScheduler(ctx context.Context, id any, shardID any, pollInterval time.Duration, store *store.Store, logger *logrus.Logger) *Scheduler {
 	ticker := time.NewTicker(time.Second)
 	now := time.Now().Unix()
 
-	timeWheel := NewTimeWheelScheduler(ticker)
+	timeWheel := NewTimeWheelScheduler(ctx, ticker, store, logger)
 	timeWheel.WithSecondsWheel(NewWheel(60, time.Second))
 	timeWheel.WithMinutesWheel(NewWheel(60, time.Minute))
 	timeWheel.WithHoursWheel(NewWheel(24, time.Hour))
@@ -51,71 +52,80 @@ func NewScheduler(id any, shardID any, pollInterval time.Duration, store *store.
 		PollInterval: pollInterval,
 		pollTracker:  pollTracker,
 		logger:       logger,
+		ctx:          ctx,
 	}
 }
 
-func (s *Scheduler) Start(ctx context.Context) {
-	go s.TimingWheel.Start(ctx)
-	go s.Poll(ctx)
+func (s *Scheduler) Start() {
+	go s.TimingWheel.Start(s.ctx)
+	go s.Poll()
 }
 
-func (s *Scheduler) Poll(ctx context.Context) {
+func (s *Scheduler) Poll() {
 	ticker := time.NewTicker(s.PollInterval)
-	defer ticker.Stop()
 
 	for {
 		select {
-		case <-ctx.Done():
-			log.Println("Canceling poll")
+		case <-s.ctx.Done():
+			s.logger.Info("canceling new jobs poll")
+			ticker.Stop()
+
 			return
 		case <-ticker.C:
 
 			now := time.Now().Unix()
 
 			if now-s.pollTracker["minutes"] >= 60 {
-				s.GetJobs(ctx, MINUTES)
+				s.GetJobs(MINUTES)
 				s.pollTracker["minutes"] = now
 			}
 
 			if now-s.pollTracker["hours"] >= 3600 {
-				s.GetJobs(ctx, HOURS)
+				s.GetJobs(HOURS)
 				s.pollTracker["hours"] = now
 			}
 
-			s.GetJobs(ctx, SECONDS)
+			s.GetJobs(SECONDS)
 			s.pollTracker["seconds"] = now
 		}
 	}
 }
 
-func (s *Scheduler) GetJobs(ctx context.Context, r JOBS_RANGE) {
-
+func (s *Scheduler) GetJobs(r JOBS_RANGE) {
 	switch r {
 	case MINUTES:
-		jobs, err := s.store.Queries.GetNextHourJobs(ctx)
+		jobs, err := s.store.Queries.GetJobsByWindow(s.ctx, sqlc.GetJobsByWindowParams{
+			Status:    ptr.Of("pending"),
+			StartTime: time.Now().Add(time.Minute).Add(time.Second),
+			EndTime:   time.Now().Add(time.Hour),
+		})
 
 		if err != nil {
 			s.logger.WithError(err).Error("error getting next hour(minutes bucket) jobs")
-			ctx.Done()
+			s.ctx.Done()
 		}
 
 		s.AddJobs(jobs)
 
 	case HOURS:
-		jobs, err := s.store.Queries.GetNext24HourJobs(ctx)
+		jobs, err := s.store.Queries.GetJobsByWindow(s.ctx, sqlc.GetJobsByWindowParams{
+			Status:    ptr.Of("pending"),
+			StartTime: time.Now().Add(time.Hour).Add(time.Second),
+			EndTime:   time.Now().Add(time.Hour * 24),
+		})
 
 		if err != nil {
 			s.logger.WithError(err).Error("error getting next 24 hours(hours bucket) jobs")
-			ctx.Done()
+			s.ctx.Done()
 		}
 
 		s.AddJobs(jobs)
 	default:
-		jobs, err := s.store.Queries.GetNextMinuteJobs(ctx)
+		jobs, err := s.store.Queries.GetNextMinuteJobs(s.ctx, sqlc.GetNextMinuteJobsParams{Status: ptr.Of("pending"), EndTime: time.Now().Add(time.Minute)})
 
 		if err != nil {
 			s.logger.WithError(err).Error("error getting next minute(seconds bucket) jobs")
-			ctx.Done()
+			s.ctx.Done()
 		}
 
 		s.AddJobs(jobs)
@@ -124,10 +134,11 @@ func (s *Scheduler) GetJobs(ctx context.Context, r JOBS_RANGE) {
 
 func (s *Scheduler) AddJobs(jobs []sqlc.Jobs) {
 	if len(jobs) < 1 {
+		s.logger.Info("0 pending jobs found. skipping...")
 		return
 	}
 
-	s.logger.Info("Adding %d jobs to timewheel", len(jobs))
+	s.logger.Infof("Adding %d jobs to timewheel", len(jobs))
 
 	for _, job := range jobs {
 		s.TimingWheel.AddJob(&Job{

@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"log"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/Edu58/multiline/config"
@@ -35,22 +37,27 @@ func main() {
 		logger.Fatalf("Could create app with err: %v", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	appCtx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
 
-	app.InitScheduler(ctx)
+	app.InitScheduler(appCtx)
 	app.InitServices()
 	app.InitHandlers()
 
-	waitForShutdownCompletion := make(chan struct{})
-	ctxShutdown, shutdownCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	go func() {
+		<-appCtx.Done()
+		logger.Info("Initiating graceful shutdown")
 
-	go app.Shutdown(ctxShutdown, waitForShutdownCompletion)
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer shutdownCancel()
+
+		if err := app.Shutdown(shutdownCtx); err != nil {
+			logger.WithError(err).Error("error shutting down service")
+			return
+		}
+	}()
 
 	if err := app.Start(); err != nil {
 		logger.Fatal(err)
 	}
-
-	<-waitForShutdownCompletion
-	cancel()
-	shutdownCancel()
 }

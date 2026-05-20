@@ -3,9 +3,6 @@ package app
 import (
 	"context"
 	"net/http"
-	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"github.com/Edu58/multiline/config"
@@ -44,8 +41,8 @@ func NewApp(store *store.Store, config *config.Config, logger *logrus.Logger) (*
 
 func (app *App) InitScheduler(ctx context.Context) {
 	app.logger.Info("Setting up scheduler")
-	scheduler := scheduler.NewScheduler("Test", 1, time.Second*3, app.store, app.logger)
-	scheduler.Start(ctx)
+	scheduler := scheduler.NewScheduler(ctx, "Test", 1, time.Second*3, app.store, app.logger)
+	scheduler.Start()
 	app.scheduler = scheduler
 }
 
@@ -64,18 +61,13 @@ func (app *App) Start() error {
 	return app.server.ListenAndServe()
 }
 
-func (app *App) Shutdown(ctx context.Context, waitForShutdownCompletion chan struct{}) error {
-	sigch := make(chan os.Signal, 1)
-	signal.Notify(sigch, syscall.SIGINT, syscall.SIGTERM)
-	sig := <-sigch
-
-	app.logger.Printf("Got signal: %v . Server shutting down.", sig)
+func (app *App) Shutdown(ctx context.Context) error {
+	app.logger.Print("Server shutting down.")
 
 	if err := app.server.Shutdown(ctx); err != nil {
 		app.logger.Errorf("Error during shutdown: %v", err)
 		return err
 	}
 
-	waitForShutdownCompletion <- struct{}{}
 	return nil
 }

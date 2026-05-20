@@ -31,23 +31,21 @@ ORDER BY next_run_time ASC
 LIMIT $1 OFFSET $2;
 
 -- name: GetJob :one
-SELECT * FROM jobs 
-WHERE id = $1 
+SELECT * FROM jobs
+WHERE id = $1
 ORDER BY next_run_time ASC;
 
 -- name: GetNextMinuteJobs :many
-SELECT * FROM jobs
-WHERE next_run_time < NOW() + INTERVAL '1 minute'
+SELECT *
+FROM jobs
+WHERE status = sqlc.arg(status)
+  AND next_run_time < sqlc.arg(end_time)
 ORDER BY next_run_time ASC;
 
--- name: GetNextHourJobs :many
-SELECT * FROM jobs
-WHERE next_run_time BETWEEN (NOW() + INTERVAL '1 minute' )
-AND (NOW() + INTERVAL '61 minutes')
-ORDER BY next_run_time ASC;
-
--- name: GetNext24HourJobs :many
-SELECT * FROM jobs
-WHERE next_run_time BETWEEN (NOW() + INTERVAL '61 minute' )
-AND (NOW() + INTERVAL '1441 minutes')
+-- name: GetJobsByWindow :many
+SELECT *
+FROM jobs
+WHERE status = sqlc.arg(status)
+  AND next_run_time >= sqlc.arg(start_time)
+  AND next_run_time < sqlc.arg(end_time)
 ORDER BY next_run_time ASC;

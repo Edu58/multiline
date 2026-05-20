@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/Edu58/multiline/config"
+	"github.com/Edu58/multiline/internal/ptr"
+	"github.com/Edu58/multiline/internal/scheduler"
 	"github.com/Edu58/multiline/internal/services"
 	"github.com/Edu58/multiline/internal/store"
 	"github.com/Edu58/multiline/internal/store/sqlc"
@@ -40,7 +42,9 @@ func TestJobsController_Index(t *testing.T) {
 	store, err := store.New(context.Background(), logger, appConfig.DSN_URL)
 	assert.NoError(t, err)
 
-	jobsService := services.NewJobsService(store, logger)
+	scheduler := scheduler.NewScheduler(t.Context(), "Test", 1, time.Second*3, store, logger)
+
+	jobsService := services.NewJobsService(store, scheduler, logger)
 	jobsController := NewJobsController(logger, jobsService)
 	jobsController.RegisterRoutes(mux)
 
@@ -80,20 +84,20 @@ func TestJobsController_Index(t *testing.T) {
 		expectedJobs := []sqlc.Jobs{
 			{
 				ID:          uuid.New(),
-				Name:        "Job1",
+				Name:        ptr.Of("Job1"),
 				Description: &description1,
 				Type:        "type1",
-				Schedule:    "schedule1",
+				Schedule:    ptr.Of("schedule1"),
 				NextRunTime: time.Now().UTC(),
 				Status:      &status,
 				ShardID:     1,
 			},
 			{
 				ID:          uuid.New(),
-				Name:        "Job2",
+				Name:        ptr.Of("Job2"),
 				Description: &description2,
 				Type:        "type2",
-				Schedule:    "schedule2",
+				Schedule:    ptr.Of("schedule2"),
 				NextRunTime: time.Now().UTC(),
 				Status:      &status,
 				ShardID:     2,

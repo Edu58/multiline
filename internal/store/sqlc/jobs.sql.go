@@ -80,8 +80,8 @@ func (q *Queries) DeleteJob(ctx context.Context, id uuid.UUID) error {
 }
 
 const getJob = `-- name: GetJob :one
-SELECT id, name, description, type, schedule, schedule_type, last_run_time, next_run_time, payload, last_run_result, retries, timeout_seconds, status, shard_id, started_at, completed_at, inserted_at, updated_at FROM jobs 
-WHERE id = $1 
+SELECT id, name, description, type, schedule, schedule_type, last_run_time, next_run_time, payload, last_run_result, retries, timeout_seconds, status, shard_id, started_at, completed_at, inserted_at, updated_at FROM jobs
+WHERE id = $1
 ORDER BY next_run_time ASC
 `
 
@@ -111,61 +111,23 @@ func (q *Queries) GetJob(ctx context.Context, id uuid.UUID) (Jobs, error) {
 	return i, err
 }
 
-const getNext24HourJobs = `-- name: GetNext24HourJobs :many
-SELECT id, name, description, type, schedule, schedule_type, last_run_time, next_run_time, payload, last_run_result, retries, timeout_seconds, status, shard_id, started_at, completed_at, inserted_at, updated_at FROM jobs
-WHERE next_run_time BETWEEN (NOW() + INTERVAL '61 minute' )
-AND (NOW() + INTERVAL '1441 minutes')
+const getJobsByWindow = `-- name: GetJobsByWindow :many
+SELECT id, name, description, type, schedule, schedule_type, last_run_time, next_run_time, payload, last_run_result, retries, timeout_seconds, status, shard_id, started_at, completed_at, inserted_at, updated_at
+FROM jobs
+WHERE status = $1
+  AND next_run_time >= $2
+  AND next_run_time < $3
 ORDER BY next_run_time ASC
 `
 
-func (q *Queries) GetNext24HourJobs(ctx context.Context) ([]Jobs, error) {
-	rows, err := q.db.Query(ctx, getNext24HourJobs)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []Jobs{}
-	for rows.Next() {
-		var i Jobs
-		if err := rows.Scan(
-			&i.ID,
-			&i.Name,
-			&i.Description,
-			&i.Type,
-			&i.Schedule,
-			&i.ScheduleType,
-			&i.LastRunTime,
-			&i.NextRunTime,
-			&i.Payload,
-			&i.LastRunResult,
-			&i.Retries,
-			&i.TimeoutSeconds,
-			&i.Status,
-			&i.ShardID,
-			&i.StartedAt,
-			&i.CompletedAt,
-			&i.InsertedAt,
-			&i.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
+type GetJobsByWindowParams struct {
+	Status    *string   `json:"status"`
+	StartTime time.Time `json:"start_time"`
+	EndTime   time.Time `json:"end_time"`
 }
 
-const getNextHourJobs = `-- name: GetNextHourJobs :many
-SELECT id, name, description, type, schedule, schedule_type, last_run_time, next_run_time, payload, last_run_result, retries, timeout_seconds, status, shard_id, started_at, completed_at, inserted_at, updated_at FROM jobs
-WHERE next_run_time BETWEEN (NOW() + INTERVAL '1 minute' )
-AND (NOW() + INTERVAL '61 minutes')
-ORDER BY next_run_time ASC
-`
-
-func (q *Queries) GetNextHourJobs(ctx context.Context) ([]Jobs, error) {
-	rows, err := q.db.Query(ctx, getNextHourJobs)
+func (q *Queries) GetJobsByWindow(ctx context.Context, arg GetJobsByWindowParams) ([]Jobs, error) {
+	rows, err := q.db.Query(ctx, getJobsByWindow, arg.Status, arg.StartTime, arg.EndTime)
 	if err != nil {
 		return nil, err
 	}
@@ -204,13 +166,20 @@ func (q *Queries) GetNextHourJobs(ctx context.Context) ([]Jobs, error) {
 }
 
 const getNextMinuteJobs = `-- name: GetNextMinuteJobs :many
-SELECT id, name, description, type, schedule, schedule_type, last_run_time, next_run_time, payload, last_run_result, retries, timeout_seconds, status, shard_id, started_at, completed_at, inserted_at, updated_at FROM jobs
-WHERE next_run_time < NOW() + INTERVAL '1 minute'
+SELECT id, name, description, type, schedule, schedule_type, last_run_time, next_run_time, payload, last_run_result, retries, timeout_seconds, status, shard_id, started_at, completed_at, inserted_at, updated_at
+FROM jobs
+WHERE status = $1
+  AND next_run_time < $2
 ORDER BY next_run_time ASC
 `
 
-func (q *Queries) GetNextMinuteJobs(ctx context.Context) ([]Jobs, error) {
-	rows, err := q.db.Query(ctx, getNextMinuteJobs)
+type GetNextMinuteJobsParams struct {
+	Status  *string   `json:"status"`
+	EndTime time.Time `json:"end_time"`
+}
+
+func (q *Queries) GetNextMinuteJobs(ctx context.Context, arg GetNextMinuteJobsParams) ([]Jobs, error) {
+	rows, err := q.db.Query(ctx, getNextMinuteJobs, arg.Status, arg.EndTime)
 	if err != nil {
 		return nil, err
 	}
