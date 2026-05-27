@@ -3,3 +3,6 @@ A fast and scalable distributed job scheduler
 
 ## High Level Design
 ![multiline high level design](./docs/images/multiline-design.png)
+
+## Architecture
+![multiline high level design](./docs/images/architecture-with-boundaries.png)

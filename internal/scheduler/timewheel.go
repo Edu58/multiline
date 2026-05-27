@@ -182,6 +182,16 @@ func (tw *TimeWheel) Tick(wheel *Wheel) {
 				if err != nil {
 					tw.logger.WithError(err).Error("Error updating executed job status")
 				} else {
+					err := tw.store.Queries.UpdateJobCompletedAt(tw.ctx, sqlc.UpdateJobCompletedAtParams{
+						ID:          j.id,
+						CompletedAt: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true},
+						Status:      ptr.Of("complete"),
+					})
+
+					if err != nil {
+						tw.logger.WithError(err).Error("Error updating executed job status")
+					}
+
 					tw.logger.WithField("JobId", j.id.ID()).Print("Executed job")
 				}
 

@@ -36,7 +36,7 @@ func NewScheduler(ctx context.Context, id any, shardID any, pollInterval time.Du
 	timeWheel := NewTimeWheelScheduler(ctx, ticker, store, logger)
 	timeWheel.WithSecondsWheel(NewWheel(60, time.Second))
 	timeWheel.WithMinutesWheel(NewWheel(60, time.Minute))
-	timeWheel.WithHoursWheel(NewWheel(24, time.Hour))
+	// timeWheel.WithHoursWheel(NewWheel(24, time.Hour))
 
 	pollTracker := map[string]int64{
 		"seconds": now,
