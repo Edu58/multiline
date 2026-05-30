@@ -9,7 +9,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/Edu58/multiline/internal/ptr"
+	"github.com/Edu58/multiline/internal/queues/rabbitmq"
 	"github.com/Edu58/multiline/internal/store"
 	"github.com/Edu58/multiline/internal/store/sqlc"
 	"github.com/google/uuid"
@@ -21,10 +21,10 @@ type SchedulerOpts func(*TimeWheel) *TimeWheel
 
 // Job is the unit of work to be done/scheduled/executed
 type Job struct {
-	id         uuid.UUID
-	jobType    string
-	payload    json.RawMessage
-	expiration int64
+	Id         uuid.UUID
+	JobType    string
+	Payload    json.RawMessage
+	Expiration int64
 	element    *list.Element
 	bucket     *Bucket
 }
@@ -52,6 +52,7 @@ type Wheel struct {
 type TimeWheel struct {
 	store   *store.Store
 	logger  *logrus.Logger
+	queue   *rabbitmq.Queue
 	hours   *Wheel
 	minutes *Wheel
 	seconds *Wheel
@@ -62,7 +63,7 @@ type TimeWheel struct {
 
 func NewJob(jobType string, payload json.RawMessage, expiration time.Duration) *Job {
 	after := time.Now().UTC().Add(expiration).Unix()
-	return &Job{id: uuid.New(), jobType: jobType, expiration: after, payload: payload}
+	return &Job{Id: uuid.New(), JobType: jobType, Expiration: after, Payload: payload}
 }
 
 func NewBucket() *Bucket {
@@ -108,21 +109,21 @@ func NewWheel(size int64, interval time.Duration) *Wheel {
 }
 
 func (w *Wheel) AddJob(j *Job) {
-	pos := calculateBucketIdx(w.position, w.interval, w.size, j.expiration)
+	pos := calculateBucketIdx(w.position, w.interval, w.size, j.Expiration)
 
-	log.Printf("inserting job %s to position %d: ", j.id, pos)
+	log.Printf("inserting job %s to position %d: ", j.Id, pos)
 
 	w.buckets[pos].AddJob(j)
 }
 
-func NewTimeWheelScheduler(ctx context.Context, ticker *time.Ticker, store *store.Store, logger *logrus.Logger, opts ...SchedulerOpts) *TimeWheel {
-	scheduler := &TimeWheel{ctx: ctx, tick: ticker, store: store, logger: logger}
+func NewTimeWheel(ctx context.Context, ticker *time.Ticker, store *store.Store, queue *rabbitmq.Queue, logger *logrus.Logger, opts ...SchedulerOpts) *TimeWheel {
+	timewheel := &TimeWheel{ctx: ctx, tick: ticker, queue: queue, store: store, logger: logger}
 
 	for _, opt := range opts {
-		opt(scheduler)
+		opt(timewheel)
 	}
 
-	return scheduler
+	return timewheel
 }
 
 func (tw *TimeWheel) WithHoursWheel(wheel *Wheel) *TimeWheel {
@@ -147,7 +148,7 @@ func (tw *TimeWheel) AddJob(job *Job) error {
 	}
 
 	now := time.Now().UTC().Unix()
-	diff := job.expiration - now
+	diff := job.Expiration - now
 
 	switch {
 	case diff < int64(time.Minute):
@@ -173,26 +174,21 @@ func (tw *TimeWheel) Tick(wheel *Wheel) {
 		// If not, we cascade the job/reassign
 		if wheel.lower == nil {
 			go func(j *Job) {
-				err := tw.store.Queries.UpdateJobStartedAt(tw.ctx, sqlc.UpdateJobStartedAtParams{
-					ID:        j.id,
+				err := tw.queue.AddToQueue(map[string]any{"id": j.Id, "payload": j.Payload, "exp": j.Expiration})
+
+				if err != nil {
+					tw.logger.WithError(err).Error("Error adding job to queue")
+				}
+
+				err = tw.store.Queries.UpdateJobStartedAt(tw.ctx, sqlc.UpdateJobStartedAtParams{
+					ID:        j.Id,
 					StartedAt: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true},
-					Status:    ptr.Of("executing"),
+					Status:    new("queued"),
 				})
 
 				if err != nil {
 					tw.logger.WithError(err).Error("Error updating executed job status")
-				} else {
-					err := tw.store.Queries.UpdateJobCompletedAt(tw.ctx, sqlc.UpdateJobCompletedAtParams{
-						ID:          j.id,
-						CompletedAt: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true},
-						Status:      ptr.Of("complete"),
-					})
-
-					if err != nil {
-						tw.logger.WithError(err).Error("Error updating executed job status")
-					}
-
-					tw.logger.WithField("JobId", j.id.ID()).Print("Executed job")
+					return
 				}
 
 			}(j)

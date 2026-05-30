@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/Edu58/multiline/internal/ptr"
+	"github.com/Edu58/multiline/internal/queues/rabbitmq"
 	"github.com/Edu58/multiline/internal/store"
 	"github.com/Edu58/multiline/internal/store/sqlc"
 	"github.com/sirupsen/logrus"
@@ -22,6 +23,7 @@ type Scheduler struct {
 	ID           any
 	ShardID      any
 	TimingWheel  *TimeWheel
+	queue        *rabbitmq.Queue
 	store        *store.Store
 	PollInterval time.Duration
 	pollTracker  map[string]int64
@@ -29,11 +31,11 @@ type Scheduler struct {
 	ctx          context.Context
 }
 
-func NewScheduler(ctx context.Context, id any, shardID any, pollInterval time.Duration, store *store.Store, logger *logrus.Logger) *Scheduler {
+func NewScheduler(ctx context.Context, id any, shardID any, pollInterval time.Duration, store *store.Store, queue *rabbitmq.Queue, logger *logrus.Logger) *Scheduler {
 	ticker := time.NewTicker(time.Second)
 	now := time.Now().Unix()
 
-	timeWheel := NewTimeWheelScheduler(ctx, ticker, store, logger)
+	timeWheel := NewTimeWheel(ctx, ticker, store, queue, logger)
 	timeWheel.WithSecondsWheel(NewWheel(60, time.Second))
 	timeWheel.WithMinutesWheel(NewWheel(60, time.Minute))
 	// timeWheel.WithHoursWheel(NewWheel(24, time.Hour))
@@ -142,10 +144,10 @@ func (s *Scheduler) AddJobs(jobs []sqlc.Jobs) {
 
 	for _, job := range jobs {
 		s.TimingWheel.AddJob(&Job{
-			id:         job.ID,
-			jobType:    job.Type,
-			payload:    job.Payload,
-			expiration: job.NextRunTime.Unix(),
+			Id:         job.ID,
+			JobType:    job.Type,
+			Payload:    job.Payload,
+			Expiration: job.NextRunTime.Unix(),
 		})
 	}
 }

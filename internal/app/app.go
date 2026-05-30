@@ -7,6 +7,7 @@ import (
 
 	"github.com/Edu58/multiline/config"
 	"github.com/Edu58/multiline/internal/controllers"
+	"github.com/Edu58/multiline/internal/queues/rabbitmq"
 	"github.com/Edu58/multiline/internal/scheduler"
 	"github.com/Edu58/multiline/internal/services"
 	"github.com/Edu58/multiline/internal/store"
@@ -19,6 +20,7 @@ type App struct {
 	server      *http.Server
 	mux         *http.ServeMux
 	logger      *logrus.Logger
+	queue       *rabbitmq.Queue
 	jobsService *services.JobsService
 	scheduler   *scheduler.Scheduler
 }
@@ -39,9 +41,37 @@ func NewApp(store *store.Store, config *config.Config, logger *logrus.Logger) (*
 	}, nil
 }
 
+func (app *App) InitQueue(ctx context.Context) error {
+	app.logger.Info("Setting up queue")
+	queue, err := rabbitmq.Connect(ctx, app.config.RABBITMQ_URL, app.logger)
+
+	if err != nil {
+		queue.Close()
+		return err
+	}
+
+	app.logger.Info("Connected to RabbitMQ")
+
+	queueConfig := rabbitmq.QueueConfig{Name: "scheduler", Durable: true, DeleteOnUse: false, Exclusive: false, NoWait: false}
+	if err := queue.CreateQueue(&queueConfig); err != nil {
+		queue.Close()
+		return err
+	}
+
+	app.queue = queue
+
+	// Close the queue when the context is cancelled (SIGINT/SIGTERM)
+	go func() {
+		<-ctx.Done()
+		app.logger.Info("Shutting down queue connection")
+		app.queue.Close()
+	}()
+	return nil
+}
+
 func (app *App) InitScheduler(ctx context.Context) {
 	app.logger.Info("Setting up scheduler")
-	scheduler := scheduler.NewScheduler(ctx, "Test", 1, time.Second*3, app.store, app.logger)
+	scheduler := scheduler.NewScheduler(ctx, "Test", 1, time.Second*3, app.store, app.queue, app.logger)
 	scheduler.Start()
 	app.scheduler = scheduler
 }

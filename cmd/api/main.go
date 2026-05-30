@@ -40,6 +40,11 @@ func main() {
 	appCtx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	if err := app.InitQueue(appCtx); err != nil {
+		logger.WithError(err).Error("Error connecting to queue")
+		return
+	}
+
 	app.InitScheduler(appCtx)
 	app.InitServices()
 	app.InitHandlers()
