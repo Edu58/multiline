@@ -174,13 +174,9 @@ func (tw *TimeWheel) Tick(wheel *Wheel) {
 		// If not, we cascade the job/reassign
 		if wheel.lower == nil {
 			go func(j *Job) {
-				err := tw.queue.AddToQueue(map[string]any{"id": j.Id, "payload": j.Payload, "exp": j.Expiration})
+				tw.queue.MsgsChan <- map[string]any{"id": j.Id, "payload": j.Payload, "exp": j.Expiration}
 
-				if err != nil {
-					tw.logger.WithError(err).Error("Error adding job to queue")
-				}
-
-				err = tw.store.Queries.UpdateJobStartedAt(tw.ctx, sqlc.UpdateJobStartedAtParams{
+				err := tw.store.Queries.UpdateJobStartedAt(tw.ctx, sqlc.UpdateJobStartedAtParams{
 					ID:        j.Id,
 					StartedAt: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true},
 					Status:    new("queued"),

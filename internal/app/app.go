@@ -50,22 +50,30 @@ func (app *App) InitQueue(ctx context.Context) error {
 		return err
 	}
 
+	app.queue = queue
 	app.logger.Info("Connected to RabbitMQ")
 
-	queueConfig := rabbitmq.QueueConfig{Name: "scheduler", Durable: true, DeleteOnUse: false, Exclusive: false, NoWait: false}
+	// Where RabbitMQ messages will be written and read from
+	msgsChan := make(chan map[string]any)
+
+	queueConfig := rabbitmq.QueueConfig{Name: "scheduler", Durable: true, DeleteOnUse: false, Exclusive: false, NoWait: false, MsgsChan: msgsChan}
 	if err := queue.CreateQueue(&queueConfig); err != nil {
 		queue.Close()
 		return err
 	}
 
-	app.queue = queue
+	// Start listening for messages on the MsgsChan
+	go queue.Start(ctx)
 
 	// Close the queue when the context is cancelled (SIGINT/SIGTERM)
 	go func() {
 		<-ctx.Done()
 		app.logger.Info("Shutting down queue connection")
-		app.queue.Close()
+		if app.queue != nil {
+			app.queue.Close()
+		}
 	}()
+
 	return nil
 }
 

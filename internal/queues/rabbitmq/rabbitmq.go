@@ -11,17 +11,19 @@ import (
 )
 
 type Queue struct {
-	queue  *amqp091.Queue
-	conn   *amqp091.Connection
-	ch     *amqp091.Channel
-	logger *logrus.Logger
+	queue    *amqp091.Queue
+	conn     *amqp091.Connection
+	ch       *amqp091.Channel
+	MsgsChan chan map[string]any
+	logger   *logrus.Logger
 }
 type QueueConfig struct {
 	Name        string
-	Durable     bool // queue survives restart
-	DeleteOnUse bool // autoDelete: don't delete when consumers disconnect
-	Exclusive   bool // can be accessed by other connections
-	NoWait      bool // wait for confirmation
+	Durable     bool                // queue survives restart
+	DeleteOnUse bool                // autoDelete: don't delete when consumers disconnect
+	Exclusive   bool                // can be accessed by other connections
+	NoWait      bool                // wait for confirmation
+	MsgsChan    chan map[string]any // channel where messages will be passed through
 }
 
 func Connect(ctx context.Context, url string, logger *logrus.Logger) (*Queue, error) {
@@ -58,6 +60,10 @@ func Connect(ctx context.Context, url string, logger *logrus.Logger) (*Queue, er
 }
 
 func (q *Queue) CreateQueue(config *QueueConfig) error {
+	if config.MsgsChan == nil {
+		return errors.New("'MsgsChan' is required")
+	}
+
 	if q.ch.IsClosed() {
 		return errors.New("Cannot use a closed channel")
 	}
@@ -79,6 +85,8 @@ func (q *Queue) CreateQueue(config *QueueConfig) error {
 	}
 
 	q.queue = &queue
+	q.MsgsChan = config.MsgsChan
+
 	return nil
 }
 
@@ -112,6 +120,18 @@ func (q *Queue) AddToQueue(j any) error {
 	q.logger.Info("Job added to queue")
 
 	return nil
+}
+
+func (q *Queue) Start(ctx context.Context) {
+	for {
+		select {
+		case msg := <-q.MsgsChan:
+			q.logger.Info("Adding message to queue")
+			q.AddToQueue(msg)
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 func (q *Queue) Close() {

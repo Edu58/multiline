@@ -111,7 +111,7 @@ func (s *Scheduler) GetJobs(r JOBS_RANGE) {
 
 	case HOURS:
 		jobs, err := s.store.Queries.GetJobsByWindow(s.ctx, sqlc.GetJobsByWindowParams{
-			Status:    ptr.Of("pending"),
+			Status:    new("pending"),
 			StartTime: time.Now().Add(time.Hour).Add(time.Second),
 			EndTime:   time.Now().Add(time.Hour * 24),
 		})
@@ -123,7 +123,7 @@ func (s *Scheduler) GetJobs(r JOBS_RANGE) {
 
 		s.AddJobs(jobs)
 	default:
-		jobs, err := s.store.Queries.GetNextMinuteJobs(s.ctx, sqlc.GetNextMinuteJobsParams{Status: ptr.Of("pending"), EndTime: time.Now().Add(time.Minute)})
+		jobs, err := s.store.Queries.GetNextMinuteJobs(s.ctx, sqlc.GetNextMinuteJobsParams{Status: new("pending"), EndTime: time.Now().Add(time.Minute)})
 
 		if err != nil {
 			s.logger.WithError(err).Error("error getting next minute(seconds bucket) jobs")
