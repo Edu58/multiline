@@ -20,13 +20,12 @@ func CreateJob(arg sqlc.CreateOrUpdateJobParams) error {
 		validation.Field(&arg.Type, validation.Required),
 		validation.Field(&arg.ShardID, validation.Required),
 		validation.Field(&arg.NextRunTime, validation.Required,
-			validation.Min(time.Now().UTC()),
-			validation.By(validatePgTimestamp),
+			validation.By(validateNextRuntime),
 		),
 	)
 }
 
-func validatePgTimestamp(value any) error {
+func validateNextRuntime(value any) error {
 	ts, ok := value.(pgtype.Timestamptz)
 	if !ok {
 		return nil
@@ -34,6 +33,10 @@ func validatePgTimestamp(value any) error {
 
 	if ts.Time.Location() != time.UTC {
 		return errors.New("must be in UTC timezone")
+	}
+
+	if ts.Time.After(time.Now().UTC()) {
+		return errors.New("must be in the future")
 	}
 
 	return nil

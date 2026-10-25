@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os/signal"
 	"syscall"
@@ -16,8 +17,8 @@ import (
 )
 
 func main() {
-	appConfig, err := config.LoadConfig(".", "app", "env")
-
+	appConfig, err := config.LoadConfig(".", "app", "yaml")
+	fmt.Println(appConfig.WORKERS)
 	if err != nil {
 		log.Fatalf("Could not load config with err: %v", err)
 	}
@@ -43,6 +44,12 @@ func main() {
 	if err := app.InitQueue(appCtx); err != nil {
 		logger.WithError(err).Error("Error connecting to queue")
 		return
+	}
+
+	workerReg := app.InitWorkerRegistry()
+
+	if err := app.InitDispatcher(&appConfig, workerReg); err != nil {
+		logger.Fatal(err)
 	}
 
 	app.InitScheduler(appCtx)

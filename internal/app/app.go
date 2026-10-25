@@ -7,22 +7,26 @@ import (
 
 	"github.com/Edu58/multiline/config"
 	"github.com/Edu58/multiline/internal/controllers"
+	customhandlers "github.com/Edu58/multiline/internal/custom_handlers"
 	"github.com/Edu58/multiline/internal/queues/rabbitmq"
 	"github.com/Edu58/multiline/internal/scheduler"
 	"github.com/Edu58/multiline/internal/services"
 	"github.com/Edu58/multiline/internal/store"
+	"github.com/Edu58/multiline/internal/workers"
 	"github.com/sirupsen/logrus"
 )
 
 type App struct {
-	config      *config.Config
-	store       *store.Store
-	server      *http.Server
-	mux         *http.ServeMux
-	logger      *logrus.Logger
-	queue       *rabbitmq.Queue
-	jobsService *services.JobsService
-	scheduler   *scheduler.Scheduler
+	config         *config.Config
+	store          *store.Store
+	server         *http.Server
+	mux            *http.ServeMux
+	logger         *logrus.Logger
+	queue          *rabbitmq.Queue
+	jobsService    *services.JobsService
+	scheduler      *scheduler.Scheduler
+	dispatcher     *workers.Dispatcher
+	workerRegistry *workers.WorkerRegistry
 }
 
 func NewApp(store *store.Store, config *config.Config, logger *logrus.Logger) (*App, error) {
@@ -77,9 +81,31 @@ func (app *App) InitQueue(ctx context.Context) error {
 	return nil
 }
 
+func (app *App) InitWorkerRegistry() *workers.WorkerRegistry {
+	app.logger.Info("Setting up worker registry")
+	reg := workers.NewWorkerRegistry()
+	emailWorker := customhandlers.NewEmailWorker()
+	reg.Register("email", emailWorker)
+
+	app.workerRegistry = reg
+	return app.workerRegistry
+}
+
+func (app *App) InitDispatcher(c *config.Config, r *workers.WorkerRegistry) error {
+	app.logger.Info("Setting up worker dispatcher")
+	dispatcher, err := workers.NewDispatcher(c, r)
+
+	if err != nil {
+		return err
+	}
+
+	app.dispatcher = dispatcher
+	return nil
+}
+
 func (app *App) InitScheduler(ctx context.Context) {
 	app.logger.Info("Setting up scheduler")
-	scheduler := scheduler.NewScheduler(ctx, "Test", 1, time.Second*3, app.store, app.queue, app.logger)
+	scheduler := scheduler.NewScheduler(ctx, "Test", 1, time.Second*3, app.store, app.workerRegistry, app.dispatcher, app.queue, app.logger)
 	scheduler.Start()
 	app.scheduler = scheduler
 }

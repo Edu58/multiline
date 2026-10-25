@@ -11,9 +11,8 @@ import (
 
 	"github.com/Edu58/multiline/internal/queues/rabbitmq"
 	"github.com/Edu58/multiline/internal/store"
-	"github.com/Edu58/multiline/internal/store/sqlc"
+	"github.com/Edu58/multiline/internal/workers"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/sirupsen/logrus"
 )
 
@@ -50,12 +49,14 @@ type Wheel struct {
 
 // TimeWheel holds all the wheels, a ticker and a channel to send a stop signal for graceful shutdown
 type TimeWheel struct {
-	store   *store.Store
-	logger  *logrus.Logger
-	queue   *rabbitmq.Queue
-	hours   *Wheel
-	minutes *Wheel
-	seconds *Wheel
+	store          *store.Store
+	logger         *logrus.Logger
+	queue          *rabbitmq.Queue
+	hours          *Wheel
+	minutes        *Wheel
+	seconds        *Wheel
+	workerRegistry *workers.WorkerRegistry
+	Dispatcher     *workers.Dispatcher
 
 	tick *time.Ticker
 	ctx  context.Context
@@ -116,8 +117,11 @@ func (w *Wheel) AddJob(j *Job) {
 	w.buckets[pos].AddJob(j)
 }
 
-func NewTimeWheel(ctx context.Context, ticker *time.Ticker, store *store.Store, queue *rabbitmq.Queue, logger *logrus.Logger, opts ...SchedulerOpts) *TimeWheel {
-	timewheel := &TimeWheel{ctx: ctx, tick: ticker, queue: queue, store: store, logger: logger}
+func NewTimeWheel(ctx context.Context, ticker *time.Ticker, store *store.Store,
+	queue *rabbitmq.Queue, workerRegistry *workers.WorkerRegistry,
+	dispatcher *workers.Dispatcher, logger *logrus.Logger, opts ...SchedulerOpts) *TimeWheel {
+
+	timewheel := &TimeWheel{ctx: ctx, tick: ticker, queue: queue, store: store, workerRegistry: workerRegistry, Dispatcher: dispatcher, logger: logger}
 
 	for _, opt := range opts {
 		opt(timewheel)
@@ -176,13 +180,13 @@ func (tw *TimeWheel) Tick(wheel *Wheel) {
 			go func(j *Job) {
 				tw.queue.MsgsChan <- map[string]any{"id": j.Id, "payload": j.Payload, "exp": j.Expiration}
 
-				err := tw.store.Queries.UpdateJobStartedAt(tw.ctx, sqlc.UpdateJobStartedAtParams{
-					ID:        j.Id,
-					StartedAt: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true},
-					Status:    new("queued"),
-				})
-
-				if err != nil {
+				if err := tw.Dispatcher.HandleJob(tw.ctx, &workers.Job{
+					Id:         j.Id,
+					JobType:    j.JobType,
+					Payload:    j.Payload,
+					Expiration: j.Expiration,
+				},
+					tw.store); err != nil {
 					tw.logger.WithError(err).Error("Error updating executed job status")
 					return
 				}

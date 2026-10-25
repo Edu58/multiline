@@ -2,12 +2,14 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"time"
 
-	"github.com/Edu58/multiline/internal/ptr"
+	// "github.com/Edu58/multiline/internal/ptr"
 	"github.com/Edu58/multiline/internal/queues/rabbitmq"
 	"github.com/Edu58/multiline/internal/store"
 	"github.com/Edu58/multiline/internal/store/sqlc"
+	"github.com/Edu58/multiline/internal/workers"
 	"github.com/sirupsen/logrus"
 )
 
@@ -20,25 +22,38 @@ const (
 )
 
 type Scheduler struct {
-	ID           any
-	ShardID      any
-	TimingWheel  *TimeWheel
-	queue        *rabbitmq.Queue
-	store        *store.Store
-	PollInterval time.Duration
-	pollTracker  map[string]int64
-	logger       *logrus.Logger
-	ctx          context.Context
+	ID             any
+	ShardID        any
+	TimingWheel    *TimeWheel
+	queue          *rabbitmq.Queue
+	store          *store.Store
+	workerRegistry *workers.WorkerRegistry
+	Dispatcher     *workers.Dispatcher
+	PollInterval   time.Duration
+	pollTracker    map[string]int64
+	logger         *logrus.Logger
+	ctx            context.Context
 }
 
-func NewScheduler(ctx context.Context, id any, shardID any, pollInterval time.Duration, store *store.Store, queue *rabbitmq.Queue, logger *logrus.Logger) *Scheduler {
+func NewScheduler(
+	ctx context.Context,
+	id any,
+	shardID any,
+	pollInterval time.Duration,
+	store *store.Store,
+	workerRegistry *workers.WorkerRegistry,
+	dispatcher *workers.Dispatcher,
+	queue *rabbitmq.Queue,
+	logger *logrus.Logger,
+) *Scheduler {
+
 	ticker := time.NewTicker(time.Second)
 	now := time.Now().Unix()
 
-	timeWheel := NewTimeWheel(ctx, ticker, store, queue, logger)
+	timeWheel := NewTimeWheel(ctx, ticker, store, queue, workerRegistry, dispatcher, logger)
 	timeWheel.WithSecondsWheel(NewWheel(60, time.Second))
 	timeWheel.WithMinutesWheel(NewWheel(60, time.Minute))
-	// timeWheel.WithHoursWheel(NewWheel(24, time.Hour))
+	timeWheel.WithHoursWheel(NewWheel(24, time.Hour))
 
 	pollTracker := map[string]int64{
 		"seconds": now,
@@ -47,14 +62,16 @@ func NewScheduler(ctx context.Context, id any, shardID any, pollInterval time.Du
 	}
 
 	return &Scheduler{
-		ID:           id,
-		ShardID:      shardID,
-		TimingWheel:  timeWheel,
-		store:        store,
-		PollInterval: pollInterval,
-		pollTracker:  pollTracker,
-		logger:       logger,
-		ctx:          ctx,
+		ID:             id,
+		ShardID:        shardID,
+		TimingWheel:    timeWheel,
+		store:          store,
+		PollInterval:   pollInterval,
+		pollTracker:    pollTracker,
+		workerRegistry: workerRegistry,
+		Dispatcher:     dispatcher,
+		logger:         logger,
+		ctx:            ctx,
 	}
 }
 
@@ -97,9 +114,9 @@ func (s *Scheduler) GetJobs(r JOBS_RANGE) {
 	switch r {
 	case MINUTES:
 		jobs, err := s.store.Queries.GetJobsByWindow(s.ctx, sqlc.GetJobsByWindowParams{
-			Status:    ptr.Of("pending"),
-			StartTime: time.Now().Add(time.Minute).Add(time.Second),
-			EndTime:   time.Now().Add(time.Hour),
+			Status:    new("pending"),
+			StartTime: time.Now().UTC().Add(time.Minute).Add(time.Second),
+			EndTime:   time.Now().UTC().Add(time.Hour),
 		})
 
 		if err != nil {
@@ -112,8 +129,8 @@ func (s *Scheduler) GetJobs(r JOBS_RANGE) {
 	case HOURS:
 		jobs, err := s.store.Queries.GetJobsByWindow(s.ctx, sqlc.GetJobsByWindowParams{
 			Status:    new("pending"),
-			StartTime: time.Now().Add(time.Hour).Add(time.Second),
-			EndTime:   time.Now().Add(time.Hour * 24),
+			StartTime: time.Now().UTC().Add(time.Hour).Add(time.Second),
+			EndTime:   time.Now().UTC().Add(time.Hour * 24),
 		})
 
 		if err != nil {
@@ -123,7 +140,14 @@ func (s *Scheduler) GetJobs(r JOBS_RANGE) {
 
 		s.AddJobs(jobs)
 	default:
-		jobs, err := s.store.Queries.GetNextMinuteJobs(s.ctx, sqlc.GetNextMinuteJobsParams{Status: new("pending"), EndTime: time.Now().Add(time.Minute)})
+		fmt.Println("sdfsdfsdf =>", r)
+		fmt.Printf("End Time is %v\n", time.Now().UTC().Add(time.Hour).String())
+
+		jobs, err := s.store.Queries.GetNextMinuteJobs(s.ctx,
+			sqlc.GetNextMinuteJobsParams{
+				Status:  new("pending"),
+				EndTime: time.Now().UTC().Add(time.Minute),
+			})
 
 		if err != nil {
 			s.logger.WithError(err).Error("error getting next minute(seconds bucket) jobs")

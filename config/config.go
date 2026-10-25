@@ -5,14 +5,15 @@ import (
 )
 
 type Config struct {
-	HOST           string `mapstructure:"host"`
-	PORT           string `mapstructure:"port"`
-	RABBITMQ_URL   string `mapstructure:"rabbitmq_url"`
-	DSN_URL        string `mapstructure:"dsn_url"`
-	DSN_OPTIONS    string `mapstructure:"dsn_options"`
-	MIGRATIONS_URL string `mapstructure:"migrations_url"`
-	LOG_LEVEL      string `mapstructure:"log_level"`
-	LOG_OUT        string `mapstructure:"log_out"`
+	HOST           string            `mapstructure:"host"`
+	PORT           string            `mapstructure:"port"`
+	RABBITMQ_URL   string            `mapstructure:"rabbitmq_url"`
+	DSN_URL        string            `mapstructure:"dsn_url"`
+	DSN_OPTIONS    string            `mapstructure:"dsn_options"`
+	MIGRATIONS_URL string            `mapstructure:"migrations_url"`
+	LOG_LEVEL      string            `mapstructure:"log_level"`
+	LOG_OUT        string            `mapstructure:"log_out"`
+	WORKERS        map[string]string `mapstructure:"workers"`
 }
 
 func LoadConfig(dir string, configName string, configType string) (config Config, err error) {
