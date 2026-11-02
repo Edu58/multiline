@@ -1,8 +1,10 @@
 // Package multiline runs persistent one-shot jobs with bounded concurrency,
 // renewable leases, token-fenced completion, and opt-in jittered retries.
 //
-// Applications supply a Repository and Handler functions, then call Run with a
-// shutdown context. Intake stops on cancellation; active handlers receive the
+// Applications register Handler functions in a WorkerRegistry, supply a Repository,
+// and call Run with a shutdown context. Schedulers snapshot registration at
+// construction. Each handler gets a dedicated pool, defaulting to one worker,
+// with claims filtered by job type. Intake stops on cancellation; handlers receive the
 // configured grace period before cancellation. A separate bounded recovery loop
 // handles expired leases. The postgres package implements persistence using sqlc.
 //

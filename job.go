@@ -105,13 +105,14 @@ type JobPage struct {
 	Next *JobCursor
 }
 
-// Repository persists leased jobs. Claim acquires only due pending work; Recover
+// Repository persists leased jobs. Claim acquires only due pending work of the
+// requested job type, never another type or a wildcard. Recover
 // separately reschedules or terminalizes expired leases in bounded batches.
 // Renew and Finish reject expired/replaced tokens with ErrLeaseLost. Finish
 // classifies permanent errors and applies the persisted retry policy. Every
 // method must honor contexts and support concurrent use.
 type Repository interface {
-	Claim(context.Context, time.Duration) (Claim, error)
+	Claim(context.Context, string, time.Duration) (Claim, error)
 	Renew(context.Context, Claim, time.Duration) error
 	Finish(context.Context, Claim, error) (FinishResult, error)
 	Recover(context.Context, int32) (RecoveryResult, error)

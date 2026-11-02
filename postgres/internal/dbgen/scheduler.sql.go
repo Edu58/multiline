@@ -20,9 +20,10 @@ SET status = 'running', started_at = clock_timestamp(), updated_at = clock_times
     attempts = attempts + 1, claim_token = $1,
     lease_expires_at = clock_timestamp() + $2::bigint * interval '1 microsecond'
 WHERE id = (
-    SELECT id FROM jobs
-    WHERE status = 'pending' AND attempts < max_attempts AND next_run_time <= clock_timestamp()
-    ORDER BY next_run_time, id FOR UPDATE SKIP LOCKED LIMIT 1
+    SELECT candidate.id FROM jobs AS candidate
+    WHERE candidate.status = 'pending' AND candidate.type = $3
+      AND candidate.attempts < candidate.max_attempts AND candidate.next_run_time <= clock_timestamp()
+    ORDER BY candidate.next_run_time, candidate.id FOR UPDATE SKIP LOCKED LIMIT 1
 )
 RETURNING id, type, payload, next_run_time, timeout_seconds, attempts
 `
@@ -30,6 +31,7 @@ RETURNING id, type, payload, next_run_time, timeout_seconds, attempts
 type ClaimJobParams struct {
 	Token             pgtype.UUID
 	LeaseMicroseconds int64
+	JobType           string
 }
 
 type ClaimJobRow struct {
@@ -42,7 +44,7 @@ type ClaimJobRow struct {
 }
 
 func (q *Queries) ClaimJob(ctx context.Context, arg ClaimJobParams) (ClaimJobRow, error) {
-	row := q.db.QueryRow(ctx, claimJob, arg.Token, arg.LeaseMicroseconds)
+	row := q.db.QueryRow(ctx, claimJob, arg.Token, arg.LeaseMicroseconds, arg.JobType)
 	var i ClaimJobRow
 	err := row.Scan(
 		&i.ID,

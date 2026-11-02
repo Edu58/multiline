@@ -6,11 +6,12 @@ import (
 )
 
 var (
-	ErrNoJob        = errors.New("multiline: no due job")
-	ErrRunning      = errors.New("multiline: scheduler already running")
-	ErrInvalid      = errors.New("multiline: invalid input")
-	ErrDuplicateJob = errors.New("multiline: duplicate job ID")
-	ErrLeaseLost    = errors.New("multiline: lease expired or ownership lost")
+	ErrNoJob            = errors.New("multiline: no due job")
+	ErrRunning          = errors.New("multiline: scheduler already running")
+	ErrInvalid          = errors.New("multiline: invalid input")
+	ErrDuplicateJob     = errors.New("multiline: duplicate job ID")
+	ErrDuplicateHandler = errors.New("multiline: duplicate handler registration")
+	ErrLeaseLost        = errors.New("multiline: lease expired or ownership lost")
 )
 
 // ValidationError identifies an invalid public input. Use errors.As to inspect

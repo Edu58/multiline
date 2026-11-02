@@ -57,7 +57,7 @@ func TestAttemptJoinsRenewalBeforeFinishingWithIndependentContext(t *testing.T) 
 	}
 	runner := attemptRunner{
 		repo: repo, leaseDuration: 30 * time.Millisecond, completionTimeout: time.Second, observe: func(Event) {},
-		handlers: map[string]Handler{"wait": func(ctx context.Context, _ Execution) error {
+		dispatcher: dispatcher{handlers: map[string]workerRegistration{"wait": {handler: func(ctx context.Context, _ Execution) error {
 			select {
 			case <-renewStarted:
 				cancel()
@@ -67,7 +67,7 @@ func TestAttemptJoinsRenewalBeforeFinishingWithIndependentContext(t *testing.T) 
 			case <-time.After(time.Second):
 				return errors.New("renewal did not start")
 			}
-		}},
+		}}}},
 	}
 	if err := runner.run(parent, Claim{Execution: Execution{ID: uuid.New(), Type: "wait"}, Token: uuid.New()}); err != nil {
 		t.Fatal(err)

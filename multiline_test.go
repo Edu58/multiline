@@ -19,18 +19,19 @@ type memoryRepository struct {
 	finishErr error
 }
 
-func (r *memoryRepository) Claim(ctx context.Context, _ time.Duration) (Claim, error) {
+func (r *memoryRepository) Claim(ctx context.Context, jobType string, _ time.Duration) (Claim, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.claimErr != nil {
 		return Claim{}, r.claimErr
 	}
-	if len(r.jobs) == 0 {
-		return Claim{}, ErrNoJob
+	for i, job := range r.jobs {
+		if job.Type == jobType {
+			r.jobs = append(r.jobs[:i], r.jobs[i+1:]...)
+			return Claim{Execution: job, Token: uuid.New()}, nil
+		}
 	}
-	j := r.jobs[0]
-	r.jobs = r.jobs[1:]
-	return Claim{Execution: j, Token: uuid.New()}, nil
+	return Claim{}, ErrNoJob
 }
 func (r *memoryRepository) Recover(context.Context, int32) (RecoveryResult, error) {
 	return RecoveryResult{}, nil
@@ -49,16 +50,27 @@ func (r *memoryRepository) Finish(ctx context.Context, claim Claim, err error) (
 	}
 	return FinishResult{Status: status}, r.finishErr
 }
+func testRegistry(t *testing.T, handlers map[string]Handler, options ...WorkerOptions) *WorkerRegistry {
+	t.Helper()
+	registry := NewWorkerRegistry()
+	for name, handler := range handlers {
+		if err := registry.Register(name, handler, options...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return registry
+}
+
 func TestRunCompletesAndContainsPanics(t *testing.T) {
-	for _, typ := range []string{"ok", "panic", "missing", "timeout"} {
+	for _, typ := range []string{"ok", "panic", "timeout"} {
 		t.Run(typ, func(t *testing.T) {
 			id := uuid.New()
 			repo := &memoryRepository{jobs: []Execution{{ID: id, Type: typ, Timeout: time.Millisecond}}, results: make(map[uuid.UUID]error)}
-			scheduler, err := NewScheduler(repo, map[string]Handler{
+			scheduler, err := NewScheduler(repo, testRegistry(t, map[string]Handler{
 				"ok":      func(context.Context, Execution) error { return nil },
 				"panic":   func(context.Context, Execution) error { panic("boom") },
 				"timeout": func(ctx context.Context, _ Execution) error { <-ctx.Done(); return nil },
-			}, Options{PollInterval: time.Millisecond})
+			}), Options{PollInterval: time.Millisecond})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -101,7 +113,7 @@ func TestRunReturnsRepositoryError(t *testing.T) {
 		} else {
 			repo.claimErr = sentinel
 		}
-		s, err := NewScheduler(repo, map[string]Handler{"ok": func(context.Context, Execution) error { return nil }}, Options{})
+		s, err := NewScheduler(repo, testRegistry(t, map[string]Handler{"ok": func(context.Context, Execution) error { return nil }}), Options{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -113,7 +125,7 @@ func TestRunReturnsRepositoryError(t *testing.T) {
 func TestRunWaitsForHandlerAndRejectsConcurrentRun(t *testing.T) {
 	started, release := make(chan struct{}), make(chan struct{})
 	repo := &memoryRepository{jobs: []Execution{{ID: uuid.New(), Type: "wait"}}, results: make(map[uuid.UUID]error)}
-	s, err := NewScheduler(repo, map[string]Handler{"wait": func(ctx context.Context, _ Execution) error { close(started); <-release; return ctx.Err() }}, Options{Concurrency: 1})
+	s, err := NewScheduler(repo, testRegistry(t, map[string]Handler{"wait": func(ctx context.Context, _ Execution) error { close(started); <-release; return ctx.Err() }}), Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,15 +155,15 @@ func TestRunWaitsForHandlerAndRejectsConcurrentRun(t *testing.T) {
 }
 func TestNewSchedulerValidation(t *testing.T) {
 	repo := &memoryRepository{}
-	h := map[string]Handler{"ok": func(context.Context, Execution) error { return nil }}
+	h := testRegistry(t, map[string]Handler{"ok": func(context.Context, Execution) error { return nil }})
 	for _, tc := range []struct {
 		repo     Repository
-		handlers map[string]Handler
+		registry *WorkerRegistry
 		opts     Options
 	}{
-		{nil, h, Options{}}, {repo, nil, Options{}}, {repo, map[string]Handler{"bad": nil}, Options{}}, {repo, h, Options{Concurrency: -1}},
+		{nil, h, Options{}}, {repo, nil, Options{}}, {repo, &WorkerRegistry{}, Options{}}, {repo, h, Options{PollInterval: -1}},
 	} {
-		if _, err := NewScheduler(tc.repo, tc.handlers, tc.opts); !errors.Is(err, ErrInvalid) {
+		if _, err := NewScheduler(tc.repo, tc.registry, tc.opts); !errors.Is(err, ErrInvalid) {
 			t.Fatalf("validation error = %v", err)
 		} else {
 			var detail *ValidationError
@@ -169,7 +181,7 @@ func TestConcurrencyBound(t *testing.T) {
 	}
 	started := make(chan struct{}, 12)
 	release := make(chan struct{})
-	s, err := NewScheduler(repo, map[string]Handler{"wait": func(context.Context, Execution) error { started <- struct{}{}; <-release; return nil }}, Options{Concurrency: 3})
+	s, err := NewScheduler(repo, testRegistry(t, map[string]Handler{"wait": func(context.Context, Execution) error { started <- struct{}{}; <-release; return nil }}, WorkerOptions{Concurrency: 3}), Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +225,7 @@ func TestLeaseRenewalCancelsHandlerOnLossOrFailure(t *testing.T) {
 			base := &memoryRepository{results: make(map[uuid.UUID]error)}
 			repo := &renewingRepository{memoryRepository: base, renew: func(context.Context, Claim, time.Duration) error { return renewErr }}
 			handler := func(ctx context.Context, _ Execution) error { <-ctx.Done(); return ctx.Err() }
-			s, err := NewScheduler(repo, map[string]Handler{"wait": handler}, Options{LeaseDuration: 30 * time.Millisecond})
+			s, err := NewScheduler(repo, testRegistry(t, map[string]Handler{"wait": handler}), Options{LeaseDuration: 30 * time.Millisecond})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -241,7 +253,7 @@ func TestLeaseRenewalContinuesDuringHandler(t *testing.T) {
 	renewed := make(chan struct{}, 4)
 	base := &memoryRepository{results: make(map[uuid.UUID]error)}
 	repo := &renewingRepository{memoryRepository: base, renew: func(context.Context, Claim, time.Duration) error { renewed <- struct{}{}; return nil }}
-	s, err := NewScheduler(repo, map[string]Handler{"wait": func(ctx context.Context, _ Execution) error {
+	s, err := NewScheduler(repo, testRegistry(t, map[string]Handler{"wait": func(ctx context.Context, _ Execution) error {
 		for range 2 {
 			select {
 			case <-renewed:
@@ -250,7 +262,7 @@ func TestLeaseRenewalContinuesDuringHandler(t *testing.T) {
 			}
 		}
 		return nil
-	}}, Options{LeaseDuration: 30 * time.Millisecond})
+	}}), Options{LeaseDuration: 30 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -290,7 +302,7 @@ func TestGracefulShutdownDrainsThenCancels(t *testing.T) {
 			id := uuid.New()
 			repo := &memoryRepository{jobs: []Execution{{ID: id, Type: "wait"}, {ID: uuid.New(), Type: "wait"}}, results: make(map[uuid.UUID]error)}
 			var handlerCanceled bool
-			s, err := NewScheduler(repo, map[string]Handler{"wait": func(ctx context.Context, _ Execution) error {
+			s, err := NewScheduler(repo, testRegistry(t, map[string]Handler{"wait": func(ctx context.Context, _ Execution) error {
 				close(started)
 				select {
 				case <-release:
@@ -299,7 +311,7 @@ func TestGracefulShutdownDrainsThenCancels(t *testing.T) {
 					handlerCanceled = true
 					return ctx.Err()
 				}
-			}}, Options{Concurrency: 1, ShutdownGracePeriod: 100 * time.Millisecond})
+			}}), Options{ShutdownGracePeriod: 100 * time.Millisecond})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -354,7 +366,7 @@ func TestRecoveryFailureBypassesShutdownGrace(t *testing.T) {
 			}
 		},
 	}
-	s, err := NewScheduler(repo, map[string]Handler{"wait": func(ctx context.Context, _ Execution) error { close(started); <-ctx.Done(); return ctx.Err() }}, Options{Concurrency: 1, ShutdownGracePeriod: time.Hour})
+	s, err := NewScheduler(repo, testRegistry(t, map[string]Handler{"wait": func(ctx context.Context, _ Execution) error { close(started); <-ctx.Done(); return ctx.Err() }}), Options{ShutdownGracePeriod: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -383,7 +395,7 @@ func TestPersistedOutcomeEvents(t *testing.T) {
 		t.Run(string(tc.kind), func(t *testing.T) {
 			repo := &finishingRepository{memoryRepository: &memoryRepository{}, finish: func(context.Context, Claim, error) (FinishResult, error) { return tc.result, tc.persistErr }}
 			var events []Event
-			s, err := NewScheduler(repo, map[string]Handler{"ok": func(context.Context, Execution) error { return nil }}, Options{Observer: func(e Event) { events = append(events, e) }})
+			s, err := NewScheduler(repo, testRegistry(t, map[string]Handler{"ok": func(context.Context, Execution) error { return nil }}), Options{Observer: func(e Event) { events = append(events, e) }})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -401,7 +413,7 @@ func TestPersistedOutcomeEvents(t *testing.T) {
 
 func TestObserverPanicDoesNotFailExecution(t *testing.T) {
 	repo := &memoryRepository{results: make(map[uuid.UUID]error)}
-	s, err := NewScheduler(repo, map[string]Handler{"ok": func(context.Context, Execution) error { return nil }}, Options{Observer: func(Event) { panic("telemetry bug") }})
+	s, err := NewScheduler(repo, testRegistry(t, map[string]Handler{"ok": func(context.Context, Execution) error { return nil }}), Options{Observer: func(Event) { panic("telemetry bug") }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -411,11 +423,97 @@ func TestObserverPanicDoesNotFailExecution(t *testing.T) {
 }
 
 func TestUnknownHandlerIsPermanent(t *testing.T) {
-	s, err := NewScheduler(&memoryRepository{}, map[string]Handler{"known": func(context.Context, Execution) error { return nil }}, Options{})
+	s, err := NewScheduler(&memoryRepository{}, testRegistry(t, map[string]Handler{"known": func(context.Context, Execution) error { return nil }}), Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := s.attempts.execute(t.Context(), Execution{Type: "unknown"}); !IsPermanent(err) {
 		t.Fatalf("unknown handler = %v", err)
+	}
+}
+
+func TestDedicatedHandlerPoolsAndDefaultOne(t *testing.T) {
+	repo := &memoryRepository{results: make(map[uuid.UUID]error)}
+	for _, jobType := range []string{"slow", "fast", "unregistered"} {
+		for range 8 {
+			repo.jobs = append(repo.jobs, Execution{ID: uuid.New(), Type: jobType})
+		}
+	}
+	started := make(chan string, 24)
+	handler := func(ctx context.Context, execution Execution) error {
+		started <- execution.Type
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	registry := NewWorkerRegistry()
+	if err := registry.Register("slow", handler, WorkerOptions{Concurrency: 3}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register("fast", handler); err != nil {
+		t.Fatal(err)
+	} // Defaults to one.
+	scheduler, err := NewScheduler(repo, registry, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- scheduler.Run(ctx) }()
+	counts := map[string]int{}
+	for range 4 {
+		select {
+		case jobType := <-started:
+			counts[jobType]++
+		case <-time.After(time.Second):
+			t.Fatal("handler pool starved")
+		}
+	}
+	if counts["slow"] != 3 || counts["fast"] != 1 {
+		t.Fatalf("active handlers = %v", counts)
+	}
+	repo.mu.Lock()
+	pending := map[string]int{}
+	for _, job := range repo.jobs {
+		pending[job.Type]++
+	}
+	repo.mu.Unlock()
+	if pending["slow"] != 5 || pending["fast"] != 7 || pending["unregistered"] != 8 {
+		t.Fatalf("jobs claimed without capacity or routing: %v", pending)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("handler pools did not shut down")
+	}
+}
+
+type mismatchedRepository struct{ *memoryRepository }
+
+func (r *mismatchedRepository) Claim(context.Context, string, time.Duration) (Claim, error) {
+	return Claim{Execution: Execution{ID: uuid.New(), Type: "report"}, Token: uuid.New()}, nil
+}
+func TestMismatchedClaimStopsSchedulerWithoutBorrowingCapacity(t *testing.T) {
+	repo := &mismatchedRepository{memoryRepository: &memoryRepository{results: make(map[uuid.UUID]error)}}
+	called := false
+	registry := NewWorkerRegistry()
+	if err := registry.Register("email", func(context.Context, Execution) error { called = true; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	scheduler, err := NewScheduler(repo, registry, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	if err := scheduler.Run(ctx); err == nil || ctx.Err() != nil {
+		t.Fatalf("Run did not reject mismatched claim: %v", err)
+	}
+	if called || len(repo.results) != 0 {
+		t.Fatal("processed a claim outside the pool's type")
 	}
 }

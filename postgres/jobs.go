@@ -28,13 +28,16 @@ func validateLease(lease time.Duration) error {
 }
 func tokenValue(token uuid.UUID) pgtype.UUID { return pgtype.UUID{Bytes: token, Valid: true} }
 
-// Claim acquires one due pending job. Expired running jobs are handled only by Recover.
-func (s *Store) Claim(ctx context.Context, lease time.Duration) (multiline.Claim, error) {
+// Claim acquires one due pending job of exactly jobType. Expired running jobs are handled only by Recover.
+func (s *Store) Claim(ctx context.Context, jobType string, lease time.Duration) (multiline.Claim, error) {
+	if err := multiline.ValidateJobType(jobType); err != nil {
+		return multiline.Claim{}, err
+	}
 	if err := validateLease(lease); err != nil {
 		return multiline.Claim{}, err
 	}
 	token := uuid.New()
-	row, err := s.queries.ClaimJob(ctx, dbgen.ClaimJobParams{Token: tokenValue(token), LeaseMicroseconds: lease.Microseconds()})
+	row, err := s.queries.ClaimJob(ctx, dbgen.ClaimJobParams{JobType: jobType, Token: tokenValue(token), LeaseMicroseconds: lease.Microseconds()})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return multiline.Claim{}, multiline.ErrNoJob
 	}

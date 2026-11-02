@@ -20,7 +20,7 @@ type attemptRepository interface {
 // The scheduler alone coordinates intake, recovery, and shutdown grace.
 type attemptRunner struct {
 	repo              attemptRepository
-	handlers          map[string]Handler
+	dispatcher        dispatcher
 	leaseDuration     time.Duration
 	completionTimeout time.Duration
 	observe           Observer
@@ -51,16 +51,12 @@ func (a *attemptRunner) execute(ctx context.Context, job Execution) (err error) 
 			err = fmt.Errorf("handler panic: %v", p)
 		}
 	}()
-	handler, ok := a.handlers[job.Type]
-	if !ok {
-		return Permanent(fmt.Errorf("unregistered job type %q", job.Type))
-	}
 	if job.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, job.Timeout)
 		defer cancel()
 	}
-	err = handler(ctx, job)
+	err = a.dispatcher.handle(ctx, job)
 	if err == nil {
 		err = ctx.Err()
 	}

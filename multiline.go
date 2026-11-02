@@ -11,8 +11,6 @@ import (
 
 // Options controls resource usage. Zero values select defaults.
 type Options struct {
-	// Concurrency bounds active handlers. Default: four.
-	Concurrency int
 	// PollInterval is the delay after an empty claim. Default: one second.
 	PollInterval time.Duration
 	// CompletionTimeout bounds result persistence after handler exit. Default: five seconds.
@@ -43,27 +41,18 @@ type Scheduler struct {
 	running  bool
 }
 
-// NewScheduler validates dependencies and copies the handler map. It starts no
-// goroutines and allocates no timers.
-func NewScheduler(repo Repository, handlers map[string]Handler, opts Options) (*Scheduler, error) {
+// NewScheduler validates dependencies and snapshots the registry. Later
+// registrations do not affect this scheduler. It starts no goroutines or timers.
+func NewScheduler(repo Repository, registry *WorkerRegistry, opts Options) (*Scheduler, error) {
 	if repo == nil {
 		return nil, &ValidationError{Field: "repository", Reason: "is required"}
 	}
-	if len(handlers) == 0 {
-		return nil, &ValidationError{Field: "handlers", Reason: "at least one is required"}
+	dispatch, err := registry.snapshot()
+	if err != nil {
+		return nil, err
 	}
-	copied := make(map[string]Handler, len(handlers))
-	for name, h := range handlers {
-		if validateJobType(name) != nil || h == nil {
-			return nil, &ValidationError{Field: "handlers", Reason: "valid nonblank name of at most 20 bytes and function are required"}
-		}
-		copied[name] = h
-	}
-	if opts.Concurrency < 0 || opts.PollInterval < 0 || opts.CompletionTimeout < 0 || opts.LeaseDuration < 0 || opts.ShutdownGracePeriod < 0 || opts.RecoveryInterval < 0 || opts.RecoveryBatchSize < 0 {
+	if opts.PollInterval < 0 || opts.CompletionTimeout < 0 || opts.LeaseDuration < 0 || opts.ShutdownGracePeriod < 0 || opts.RecoveryInterval < 0 || opts.RecoveryBatchSize < 0 {
 		return nil, &ValidationError{Field: "options", Reason: "must not be negative"}
-	}
-	if opts.Concurrency == 0 {
-		opts.Concurrency = 4
 	}
 	if opts.PollInterval == 0 {
 		opts.PollInterval = time.Second
@@ -87,7 +76,7 @@ func NewScheduler(repo Repository, handlers map[string]Handler, opts Options) (*
 		return nil, &ValidationError{Field: "recovery_batch_size", Reason: "must be at most 1000"}
 	}
 	s := &Scheduler{repo: repo, opts: opts}
-	s.attempts = attemptRunner{repo: repo, handlers: copied, leaseDuration: opts.LeaseDuration, completionTimeout: opts.CompletionTimeout, observe: s.observe, logger: opts.Logger}
+	s.attempts = attemptRunner{repo: repo, dispatcher: dispatch, leaseDuration: opts.LeaseDuration, completionTimeout: opts.CompletionTimeout, observe: s.observe, logger: opts.Logger}
 	return s, nil
 }
 
@@ -122,8 +111,10 @@ func (s *Scheduler) Run(ctx context.Context) error {
 			}
 		})
 	}
-	for range s.opts.Concurrency {
-		launch(func() error { return s.work(claimCtx, executionCtx) })
+	for jobType, worker := range s.attempts.dispatcher.handlers {
+		for range worker.concurrency {
+			launch(func() error { return s.work(claimCtx, executionCtx, jobType) })
+		}
 	}
 	launch(func() error { return s.recoverLoop(claimCtx) })
 	done := make(chan struct{})
@@ -150,7 +141,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	}
 }
 
-func (s *Scheduler) work(claimCtx, executionCtx context.Context) error {
+func (s *Scheduler) work(claimCtx, executionCtx context.Context, jobType string) error {
 	timer := time.NewTimer(s.opts.PollInterval)
 	defer timer.Stop()
 	for {
@@ -158,7 +149,7 @@ func (s *Scheduler) work(claimCtx, executionCtx context.Context) error {
 			return nil
 		}
 		started := time.Now()
-		claim, err := s.repo.Claim(claimCtx, s.opts.LeaseDuration)
+		claim, err := s.repo.Claim(claimCtx, jobType, s.opts.LeaseDuration)
 		if claimCtx.Err() != nil && err != nil {
 			return nil
 		}
@@ -173,6 +164,11 @@ func (s *Scheduler) work(claimCtx, executionCtx context.Context) error {
 		}
 		if err != nil {
 			s.observe(Event{Kind: EventClaimFailed, Duration: time.Since(started), Err: err})
+			return fmt.Errorf("multiline: claim job: %w", err)
+		}
+		if claim.Execution.Type != jobType {
+			err := fmt.Errorf("repository returned job type %q for worker %q", claim.Execution.Type, jobType)
+			s.observe(Event{Kind: EventClaimFailed, JobID: claim.Execution.ID, Duration: time.Since(started), Err: err})
 			return fmt.Errorf("multiline: claim job: %w", err)
 		}
 		s.observe(Event{Kind: EventClaimed, JobID: claim.Execution.ID, Attempt: claim.Execution.Attempt, Duration: time.Since(started)})

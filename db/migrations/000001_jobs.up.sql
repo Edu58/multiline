@@ -27,7 +27,7 @@ CREATE TABLE jobs (
     ),
     CONSTRAINT jobs_completion_valid CHECK ((status IN ('completed','failed')) = (completed_at IS NOT NULL))
 );
-CREATE INDEX jobs_pending_due ON jobs (next_run_time, id) WHERE status = 'pending';
+CREATE INDEX jobs_pending_due ON jobs (type, next_run_time, id) WHERE status = 'pending';
 CREATE INDEX jobs_expired_leases ON jobs (lease_expires_at, id) WHERE status = 'running';
 CREATE INDEX jobs_creation_order ON jobs (created_at, id);
 CREATE INDEX jobs_terminal_retention ON jobs (completed_at, id) WHERE status IN ('completed','failed');

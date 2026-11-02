@@ -37,14 +37,16 @@ if err != nil {
     return err
 }
 
-scheduler, err := multiline.NewScheduler(db, map[string]multiline.Handler{
-    "email": func(ctx context.Context, execution multiline.Execution) error {
-        err := sendEmail(ctx, execution.ID.String(), execution.Payload)
-        // Return multiline.Permanent(err) for errors that retry cannot fix.
-        return err
-    },
-}, multiline.Options{
-    Concurrency: 8,
+registry := multiline.NewWorkerRegistry()
+if err := registry.Register("email", func(ctx context.Context, execution multiline.Execution) error {
+    err := sendEmail(ctx, execution.ID.String(), execution.Payload)
+    // Return multiline.Permanent(err) for errors that retry cannot fix.
+    return err
+}, multiline.WorkerOptions{Concurrency: 8}); err != nil {
+    return err
+}
+
+scheduler, err := multiline.NewScheduler(db, registry, multiline.Options{
     ShutdownGracePeriod: 30 * time.Second,
 })
 if err != nil {
@@ -56,6 +58,59 @@ return scheduler.Run(ctx)
 The snippet assumes application-owned `ctx`, `dsn`, and `sendEmail`; import
 `context`, `encoding/json`, `time`, the root package, its `postgres` package, and
 `github.com/jackc/pgx/v5/pgxpool`. See the [compiling lifecycle example](example_test.go).
+
+## Handler registration and dispatch
+
+Create a `WorkerRegistry` during application startup and call
+`Register(jobType, handler, optionalWorkerOptions)` from your application modules. Job types are
+case-sensitive keys that map directly to `Handler` functions. Register validates
+names and rejects nil handlers with `ErrInvalid`; duplicates return
+`ErrDuplicateHandler` without replacing the existing registration. A registry's
+zero value is usable, and registration/scheduler construction are safe concurrently.
+Do not copy a registry after first use.
+
+`NewScheduler` takes a nonempty registry and snapshots its registrations. Later
+registrations affect only subsequently constructed schedulers, including when an
+existing scheduler is restarted. Handler function state is still shared, so each
+handler must be safe for concurrent use. A private dispatcher selects the handler
+by `Execution.Type`. The attempt runner retains timeouts, panic containment, lease renewal, and result persistence.
+
+### Dedicated handler pools
+
+Each registration gets **one worker by default**, including explicit zero-valued
+options. Set a positive count to reserve more workers for that handler:
+
+```go
+if err := registry.Register("email", sendEmail,
+    multiline.WorkerOptions{Concurrency: 8}); err != nil {
+    return err
+}
+if err := registry.Register("report", generateReport,
+    multiline.WorkerOptions{Concurrency: 2}); err != nil {
+    return err
+}
+// Omitting WorkerOptions creates one worker for this handler.
+```
+
+These pools claim only their own job types and execute immediately; jobs do not
+hold leases waiting for a handler slot. A busy email pool cannot consume report
+capacity. Total worker count is the sum of registered counts. Limits apply per
+scheduler instance: three processes with eight email workers each permit up to
+24 concurrent email attempts. They are not cluster-wide limits. Negative counts
+and multiple WorkerOptions arguments are invalid. Counts are snapshotted with
+handlers at scheduler construction.
+
+Unregistered job types stay pending until a scheduler with that registration is
+started. All schedulers may share the database while registering different types.
+The private dispatcher still treats an unexpected type as a permanent error,
+but a conforming Repository never returns another type to a worker.
+
+**API changes:** `NewScheduler` takes a `*WorkerRegistry` instead of a handler map.
+Move old `Options.Concurrency` values into each registration's
+`WorkerOptions.Concurrency`; there is no scheduler-wide worker count.
+Custom repositories must now implement `Claim(ctx, jobType, leaseDuration)` and
+filter atomically by that type. Empty types are invalid, never a wildcard.
+Register each key/value pair explicitly and handle errors before construction.
 
 ## Types and transaction ownership
 
@@ -101,7 +156,8 @@ These constraints are included in the fresh schema baseline.
 
 ## Attempts, leases, and retry policy
 
-Claims select only due pending work and atomically increment the attempt count.
+Claims select only due pending work matching the requesting worker's job type
+and atomically increment the attempt count.
 A fresh token fences renewal and completion. Leases default to 30 seconds and
 renew every third of that duration while the handler runs, including during
 shutdown grace. Expired leases cannot be resurrected or completed. Database
@@ -120,8 +176,8 @@ one hour and RetryDelay. Both are limited to 24 hours and round up to millisecon
 Timeout defaults to 15 seconds and rounds up to seconds. Handler errors, panics,
 timeouts, and forced cancellation consume attempts. Success clears the last
 error and marks the job completed. `Permanent(err)` skips retries and preserves
-the underlying error; wrapped permanent errors remain classifiable. Unknown
-handler types are permanent failures.
+the underlying error; wrapped permanent errors remain classifiable. Jobs whose
+types have no registered pool remain pending rather than consuming attempts.
 
 `Finish` returns the actual persisted `FinishResult`, including retry time.
 A handler returning nil does not imply successful result persistence.
@@ -148,9 +204,10 @@ again. Database failures during recovery stop Run and cancel active handlers.
 
 ## Shutdown and failures
 
-`NewScheduler` validates and copies registration without starting goroutines.
-`Run` bounds handler concurrency (default four), polls empty queues every second,
-and owns and joins worker, recovery, and renewal goroutines.
+`NewScheduler` validates and snapshots registration without starting goroutines.
+`Run` starts the configured dedicated pools (one worker per handler by default),
+polls empty pools every second, and owns and joins worker, recovery, and renewal
+goroutines.
 
 Canceling Run's context immediately stops new claim/recovery requests. In-flight
 claims may still complete. Active handlers retain context values and their own
@@ -162,8 +219,10 @@ infrastructure error. A handler ignoring cancellation can delay return indefinit
 Renewal stops after handler exit. Result writes use a separate bounded context
 (default five seconds). An expired lease rejects that result. Choose leases
 comfortably longer than completion time and database latency; tiny leases are
-for tests. Size the pool for handlers' database usage plus renewal and recovery.
-All workers sharing the queue must understand its job types.
+for tests. Size the connection pool for the sum of configured worker counts,
+handlers' database usage, renewal, and recovery. Each idle worker polls its own
+type, so more workers also increase idle query traffic. Recovery remains one
+queue-wide loop per scheduler, independent of which types it registers.
 
 ## Cursor inspection and retention
 
@@ -187,7 +246,7 @@ bounded calls to clear history without an unbounded deletion transaction.
 ## Errors and observability
 
 Use `errors.Is` for `ErrInvalid`, `ErrDuplicateJob`, `ErrLeaseLost`, `ErrNoJob`,
-and `ErrRunning`, and `errors.As` for `*ValidationError` field details.
+`ErrDuplicateHandler`, and `ErrRunning`, and `errors.As` for `*ValidationError` field details.
 `IsPermanent` classifies non-retryable handler failures. PostgreSQL causes remain
 wrapped for diagnostics.
 

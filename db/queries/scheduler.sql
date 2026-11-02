@@ -4,9 +4,10 @@ SET status = 'running', started_at = clock_timestamp(), updated_at = clock_times
     attempts = attempts + 1, claim_token = sqlc.arg(token),
     lease_expires_at = clock_timestamp() + sqlc.arg(lease_microseconds)::bigint * interval '1 microsecond'
 WHERE id = (
-    SELECT id FROM jobs
-    WHERE status = 'pending' AND attempts < max_attempts AND next_run_time <= clock_timestamp()
-    ORDER BY next_run_time, id FOR UPDATE SKIP LOCKED LIMIT 1
+    SELECT candidate.id FROM jobs AS candidate
+    WHERE candidate.status = 'pending' AND candidate.type = sqlc.arg(job_type)
+      AND candidate.attempts < candidate.max_attempts AND candidate.next_run_time <= clock_timestamp()
+    ORDER BY candidate.next_run_time, candidate.id FOR UPDATE SKIP LOCKED LIMIT 1
 )
 RETURNING id, type, payload, next_run_time, timeout_seconds, attempts;
 

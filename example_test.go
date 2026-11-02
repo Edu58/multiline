@@ -25,12 +25,15 @@ func ExampleNewScheduler() {
 		return
 	}
 	db := postgres.New(pool)
-	scheduler, err := multiline.NewScheduler(db, map[string]multiline.Handler{
-		"email": func(ctx context.Context, job multiline.Execution) error {
-			// Send using a context-aware client and job.ID as an idempotency key.
-			return nil
-		},
-	}, multiline.Options{Concurrency: 8, PollInterval: time.Second, ShutdownGracePeriod: 30 * time.Second})
+	registry := multiline.NewWorkerRegistry()
+	if err := registry.Register("email", func(ctx context.Context, job multiline.Execution) error {
+		// Send using a context-aware client and job.ID as an idempotency key.
+		return nil
+	}, multiline.WorkerOptions{Concurrency: 8}); err != nil {
+		log.Print(err)
+		return
+	}
+	scheduler, err := multiline.NewScheduler(db, registry, multiline.Options{PollInterval: time.Second, ShutdownGracePeriod: 30 * time.Second})
 	if err != nil {
 		log.Print(err)
 		return

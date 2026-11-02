@@ -19,6 +19,39 @@ Both reuse private enqueue/inspection code; transaction ownership stays with the
 caller. A test checks their method sets. This replaces a documentation-only rule
 with a restriction enforced by the type system.
 
+## Make registration explicit and dispatch immutable
+
+WorkerRegistry maps job types directly to Handler functions and per-handler
+WorkerOptions. Register validates keys, nil handlers, duplicate names, and worker
+counts, and supports safe concurrent registration. A scheduler copies registration
+and counts under a read lock during construction.
+It never observes later additions, so startup composition across application modules
+does not introduce dynamic routing changes for running or restarted schedulers.
+Snapshots copy function references; they do not clone mutable handler state.
+
+A private dispatcher resolves Execution.Type and invokes the selected handler.
+Unexpected types are permanent errors as a defensive boundary. It owns no lifecycle policy: the attempt
+runner still controls timeout/panic containment, ownership renewal, and completion.
+This makes the registry public for application composition without exposing a
+second public execution API or adding job-type-to-worker-name indirection.
+
+## Reserve capacity before claiming work
+
+Each registration creates a dedicated pool, defaulting to one worker. WorkerOptions
+can increase its concurrency independently of other types. The scheduler-wide
+Concurrency option is removed to avoid two competing meanings for the same limit.
+Total concurrency is the sum of registration counts within one scheduler instance;
+other instances have their own limits.
+
+A pool's claim query filters by job type before locking a due row. An index on
+(type, next_run_time, id) for pending jobs supports this access pattern. Jobs
+remain pending until a worker has capacity, rather than acquiring leases while
+waiting behind an in-memory semaphore. A full pool cannot consume another type's
+workers. Unregistered jobs remain pending and can be served by another scheduler
+with that registration. Custom repositories must preserve this routing guarantee;
+the scheduler stops on a mismatched claim instead of borrowing another pool's
+capacity. Recovery remains queue-wide and separately bounded.
+
 ## Centralize input policy before persistence
 
 EnqueueParams.Normalize owns validation, defaults, precision, ID generation, and
@@ -120,10 +153,11 @@ notifications; use application-owned durable mechanisms if delivery matters.
 
 ## Verify failure boundaries
 
-Unit tests cover shared normalization and ownership, UTF-8/size boundaries,
+Unit tests cover registry validation, duplicate/snapshot behavior, concurrent
+registration, independent pool limits and the one-worker default, shared normalization and ownership, UTF-8/size boundaries,
 concurrency limits, graceful drain and cancellation, renewal
 failure, permanent errors, observer outcomes/panics, and middleware composition.
-PostgreSQL tests cover atomic claims, expired/stale/forged tokens, retry bounds,
+PostgreSQL tests cover atomic type-filtered claims, expired/stale/forged tokens, retry bounds,
 recovery batches, cursor ties/deleted boundaries, retention, transaction visibility,
 constraints, payload/error persistence limits, and the fresh migration up/down cycle. A subprocess dies inside a
 handler, leaving its committed claim for recovery. Another test interrupts pool

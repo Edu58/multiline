@@ -20,7 +20,9 @@ const (
 
 func invalid(field, reason string) error { return &ValidationError{Field: field, Reason: reason} }
 
-func validateJobType(name string) error {
+// ValidateJobType checks the shared registration, enqueue, and claim key rules.
+// Invalid keys return ErrInvalid with field type. Names are case-sensitive.
+func ValidateJobType(name string) error {
 	if !utf8.ValidString(name) || strings.ContainsRune(name, 0) || strings.TrimSpace(name) == "" || len(name) > 20 {
 		return invalid("type", "must contain 1 to 20 bytes of nonblank UTF-8 text without NUL")
 	}
@@ -34,7 +36,7 @@ func validateJobType(name string) error {
 // and values of an already normalized result. Invalid input returns ErrInvalid
 // with a ValidationError describing the field; no ID is generated on failure.
 func (p EnqueueParams) Normalize() (EnqueueParams, error) {
-	if err := validateJobType(p.Type); err != nil {
+	if err := ValidateJobType(p.Type); err != nil {
 		return EnqueueParams{}, err
 	}
 	if p.RunAt.IsZero() {

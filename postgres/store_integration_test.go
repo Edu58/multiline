@@ -83,6 +83,17 @@ func listJobs(ctx context.Context, db lister, limit int32) ([]multiline.JobRecor
 	return page.Jobs, err
 }
 
+func registered(t *testing.T, handlers map[string]multiline.Handler) *multiline.WorkerRegistry {
+	t.Helper()
+	registry := multiline.NewWorkerRegistry()
+	for name, handler := range handlers {
+		if err := registry.Register(name, handler); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return registry
+}
+
 func TestConcurrentClaims(t *testing.T) {
 	ctx := t.Context()
 	pool := newTestPool(t)
@@ -101,7 +112,7 @@ func TestConcurrentClaims(t *testing.T) {
 	for range 8 {
 		wg.Go(func() {
 			for {
-				job, err := db.Claim(ctx, time.Minute)
+				job, err := db.Claim(ctx, "test", time.Minute)
 				if errors.Is(err, multiline.ErrNoJob) {
 					return
 				}
@@ -147,7 +158,7 @@ func TestRoundTripAndTerminalStates(t *testing.T) {
 	ctx := t.Context()
 	pool := newTestPool(t)
 	db := postgres.New(pool)
-	if _, err := db.Claim(ctx, time.Minute); !errors.Is(err, multiline.ErrNoJob) {
+	if _, err := db.Claim(ctx, "test", time.Minute); !errors.Is(err, multiline.ErrNoJob) {
 		t.Fatalf("empty claim: %v", err)
 	}
 	when := time.Now().UTC().Truncate(time.Microsecond).Add(-time.Second)
@@ -159,7 +170,7 @@ func TestRoundTripAndTerminalStates(t *testing.T) {
 	if _, err := db.Enqueue(ctx, multiline.EnqueueParams{ID: id, Type: "test", RunAt: when}); !errors.Is(err, multiline.ErrDuplicateJob) {
 		t.Fatalf("duplicate ID error = %v", err)
 	}
-	job, err := db.Claim(ctx, time.Minute)
+	job, err := db.Claim(ctx, "test", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +309,7 @@ func TestValidationAndDatabaseErrors(t *testing.T) {
 		t.Fatalf("invalid retention batch = %v", err)
 	}
 	pool.Close()
-	if _, err := db.Claim(ctx, time.Minute); err == nil {
+	if _, err := db.Claim(ctx, "test", time.Minute); err == nil {
 		t.Fatal("closed pool claim succeeded")
 	}
 	if _, err := db.Enqueue(ctx, multiline.EnqueueParams{Type: "test", RunAt: time.Now()}); err == nil {
@@ -327,7 +338,7 @@ func TestLeaseRecoveryAndFencing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, err := db.Claim(ctx, time.Minute)
+	first, err := db.Claim(ctx, "test", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -355,7 +366,7 @@ func TestLeaseRecoveryAndFencing(t *testing.T) {
 	if _, err := db.Finish(ctx, first, nil); !errors.Is(err, multiline.ErrLeaseLost) {
 		t.Fatalf("expired completion: %v", err)
 	}
-	if _, err := db.Claim(ctx, time.Minute); !errors.Is(err, multiline.ErrNoJob) {
+	if _, err := db.Claim(ctx, "test", time.Minute); !errors.Is(err, multiline.ErrNoJob) {
 		t.Fatalf("claim recovered implicitly: %v", err)
 	}
 	recovered, err := db.Recover(ctx, 1)
@@ -365,7 +376,7 @@ func TestLeaseRecoveryAndFencing(t *testing.T) {
 	if _, err := pool.Exec(ctx, "UPDATE jobs SET next_run_time=clock_timestamp() WHERE id=$1", id); err != nil {
 		t.Fatal(err)
 	}
-	second, err := db.Claim(ctx, time.Minute)
+	second, err := db.Claim(ctx, "test", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -379,7 +390,7 @@ func TestLeaseRecoveryAndFencing(t *testing.T) {
 		t.Fatalf("stale renewal: %v", err)
 	}
 	expire()
-	if _, err := db.Claim(ctx, time.Minute); !errors.Is(err, multiline.ErrNoJob) {
+	if _, err := db.Claim(ctx, "test", time.Minute); !errors.Is(err, multiline.ErrNoJob) {
 		t.Fatalf("final expired claim: %v", err)
 	}
 	jobs, err := listJobs(ctx, db, 1)
@@ -407,7 +418,7 @@ func TestRetryDelayAndSuccessfulRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, err := db.Claim(ctx, time.Minute)
+	first, err := db.Claim(ctx, "test", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -427,7 +438,7 @@ func TestRetryDelayAndSuccessfulRecovery(t *testing.T) {
 	if _, err := pool.Exec(ctx, "UPDATE jobs SET next_run_time=clock_timestamp() WHERE id=$1", id); err != nil {
 		t.Fatal(err)
 	}
-	second, err := db.Claim(ctx, time.Minute)
+	second, err := db.Claim(ctx, "test", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -473,7 +484,7 @@ func TestSchedulerRenewsLeaseAcrossOriginalExpiry(t *testing.T) {
 		t.Fatal(err)
 	}
 	started, release := make(chan struct{}), make(chan struct{})
-	scheduler, err := multiline.NewScheduler(db, map[string]multiline.Handler{"wait": func(ctx context.Context, _ multiline.Execution) error {
+	scheduler, err := multiline.NewScheduler(db, registered(t, map[string]multiline.Handler{"wait": func(ctx context.Context, _ multiline.Execution) error {
 		close(started)
 		select {
 		case <-release:
@@ -481,7 +492,7 @@ func TestSchedulerRenewsLeaseAcrossOriginalExpiry(t *testing.T) {
 		case <-ctx.Done():
 			return ctx.Err()
 		}
-	}}, multiline.Options{Concurrency: 1, LeaseDuration: 900 * time.Millisecond, PollInterval: 10 * time.Millisecond})
+	}}), multiline.Options{LeaseDuration: 900 * time.Millisecond, PollInterval: 10 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -507,7 +518,7 @@ func TestSchedulerRenewsLeaseAcrossOriginalExpiry(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
-	if _, err := db.Claim(ctx, time.Minute); !errors.Is(err, multiline.ErrNoJob) {
+	if _, err := db.Claim(ctx, "wait", time.Minute); !errors.Is(err, multiline.ErrNoJob) {
 		t.Fatalf("active job reclaimed: %v", err)
 	}
 	close(release)
@@ -553,7 +564,7 @@ func TestPermanentErrorsSkipRetries(t *testing.T) {
 	if _, err := db.Enqueue(ctx, multiline.EnqueueParams{Type: "test", RunAt: time.Now(), MaxAttempts: 10}); err != nil {
 		t.Fatal(err)
 	}
-	claim, err := db.Claim(ctx, time.Minute)
+	claim, err := db.Claim(ctx, "test", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -582,7 +593,7 @@ func TestBackoffJitterIsBoundedAndCapped(t *testing.T) {
 		t.Fatal(err)
 	}
 	for attempt := 1; attempt <= 6; attempt++ {
-		claim, err := db.Claim(ctx, time.Minute)
+		claim, err := db.Claim(ctx, "test", time.Minute)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -622,7 +633,7 @@ func TestBoundedRecoveryAndRetention(t *testing.T) {
 		if _, err := db.Enqueue(ctx, multiline.EnqueueParams{Type: "test", RunAt: time.Now()}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.Claim(ctx, time.Minute); err != nil {
+		if _, err := db.Claim(ctx, "test", time.Minute); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -630,7 +641,7 @@ func TestBoundedRecoveryAndRetention(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Claim never mutates expired running state.
-	if _, err := db.Claim(ctx, time.Minute); !errors.Is(err, multiline.ErrNoJob) {
+	if _, err := db.Claim(ctx, "test", time.Minute); !errors.Is(err, multiline.ErrNoJob) {
 		t.Fatal(err)
 	}
 	for want := range 3 {
@@ -652,7 +663,7 @@ func TestBoundedRecoveryAndRetention(t *testing.T) {
 	if _, err := db.Enqueue(ctx, multiline.EnqueueParams{Type: "running", RunAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Claim(ctx, time.Minute); err != nil {
+	if _, err := db.Claim(ctx, "running", time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	cutoff := time.Now().Add(time.Second)
@@ -747,10 +758,10 @@ func TestCrashWorkerHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	scheduler, err := multiline.NewScheduler(postgres.New(pool), map[string]multiline.Handler{"crash": func(context.Context, multiline.Execution) error {
+	scheduler, err := multiline.NewScheduler(postgres.New(pool), registered(t, map[string]multiline.Handler{"crash": func(context.Context, multiline.Execution) error {
 		os.Exit(23) // Simulate process death after the claim commits, before completion.
 		return nil
-	}}, multiline.Options{Concurrency: 1, LeaseDuration: 90 * time.Millisecond})
+	}}), multiline.Options{LeaseDuration: 90 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -792,7 +803,7 @@ func TestRecoveryAfterWorkerProcessDeath(t *testing.T) {
 		t.Fatalf("crash recovery = %+v, %v", recovered, err)
 	}
 	for {
-		claim, err := db.Claim(ctx, time.Minute)
+		claim, err := db.Claim(ctx, "crash", time.Minute)
 		if errors.Is(err, multiline.ErrNoJob) {
 			select {
 			case <-time.After(time.Millisecond):
@@ -823,12 +834,12 @@ func TestDatabaseFailureCancelsActiveHandler(t *testing.T) {
 		t.Fatal(err)
 	}
 	started, canceled := make(chan struct{}), make(chan struct{})
-	scheduler, err := multiline.NewScheduler(db, map[string]multiline.Handler{"wait": func(ctx context.Context, _ multiline.Execution) error {
+	scheduler, err := multiline.NewScheduler(db, registered(t, map[string]multiline.Handler{"wait": func(ctx context.Context, _ multiline.Execution) error {
 		close(started)
 		<-ctx.Done()
 		close(canceled)
 		return ctx.Err()
-	}}, multiline.Options{Concurrency: 1, RecoveryInterval: 10 * time.Millisecond, ShutdownGracePeriod: time.Hour})
+	}}), multiline.Options{RecoveryInterval: 10 * time.Millisecond, ShutdownGracePeriod: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -866,7 +877,7 @@ func TestRetentionCutoffIsStrict(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		claim, err := db.Claim(ctx, time.Minute)
+		claim, err := db.Claim(ctx, "test", time.Minute)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -902,7 +913,7 @@ func TestConcurrentRecovery(t *testing.T) {
 		if _, err := db.Enqueue(ctx, multiline.EnqueueParams{Type: "test", RunAt: time.Now(), MaxAttempts: 1 + int32(i%2)}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.Claim(ctx, time.Minute); err != nil {
+		if _, err := db.Claim(ctx, "test", time.Minute); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -947,7 +958,7 @@ func TestPersistenceSizeLimits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	claim, err := db.Claim(ctx, time.Minute)
+	claim, err := db.Claim(ctx, "test", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1004,5 +1015,115 @@ func TestPostgresRepresentationLimitIsValidationError(t *testing.T) {
 	var cause *pgconn.PgError
 	if !errors.Is(err, multiline.ErrInvalid) || !errors.As(err, &detail) || detail.Field != "payload" || !errors.As(err, &cause) || cause.ConstraintName != "jobs_payload_size" {
 		t.Fatalf("representation size error = %v", err)
+	}
+}
+
+func TestClaimFiltersJobType(t *testing.T) {
+	ctx := t.Context()
+	pool := newTestPool(t)
+	db := postgres.New(pool)
+	ids := map[string]uuid.UUID{}
+	for i, jobType := range []string{"email", "report", "unknown"} {
+		id, err := db.Enqueue(ctx, multiline.EnqueueParams{Type: jobType, RunAt: time.Now().Add(-time.Duration(3-i) * time.Hour)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids[jobType] = id
+	}
+	// An older email must not occupy a report worker or another type's lease.
+	report, err := db.Claim(ctx, "report", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Execution.ID != ids["report"] || report.Execution.Type != "report" {
+		t.Fatalf("wrong pool claimed job: %+v", report)
+	}
+	if _, err := db.Claim(ctx, "report", time.Minute); !errors.Is(err, multiline.ErrNoJob) {
+		t.Fatalf("report worker claimed another type: %v", err)
+	}
+	if _, err := db.Claim(ctx, "", time.Minute); !errors.Is(err, multiline.ErrInvalid) {
+		t.Fatalf("empty type allowed wildcard: %v", err)
+	}
+	records, err := listJobs(ctx, db, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range records {
+		if record.Type != "report" && (record.Status != multiline.StatusPending || record.Attempts != 0 || record.LeaseExpiresAt != nil) {
+			t.Fatalf("unselected job was claimed: %+v", record)
+		}
+	}
+	email, err := db.Claim(ctx, "email", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if email.Execution.ID != ids["email"] {
+		t.Fatal("email claim did not use its own backlog")
+	}
+}
+
+func TestDedicatedPoolsWithPostgresBacklog(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	pool := newTestPool(t)
+	db := postgres.New(pool)
+	for _, jobType := range []string{"slow", "fast", "unknown"} {
+		for range 5 {
+			if _, err := db.Enqueue(ctx, multiline.EnqueueParams{Type: jobType, RunAt: time.Now()}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	started := make(chan string, 15)
+	handler := func(ctx context.Context, execution multiline.Execution) error {
+		started <- execution.Type
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	registry := multiline.NewWorkerRegistry()
+	if err := registry.Register("slow", handler, multiline.WorkerOptions{Concurrency: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register("fast", handler); err != nil {
+		t.Fatal(err)
+	}
+	scheduler, err := multiline.NewScheduler(db, registry, multiline.Options{PollInterval: 10 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- scheduler.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-done; !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			t.Error(err)
+		}
+	})
+	counts := map[string]int{}
+	for range 3 {
+		select {
+		case jobType := <-started:
+			counts[jobType]++
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+	if counts["slow"] != 2 || counts["fast"] != 1 {
+		t.Fatalf("active pools = %v", counts)
+	}
+	records, err := listJobs(ctx, db, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	running, pending := map[string]int{}, map[string]int{}
+	for _, record := range records {
+		if record.Status == multiline.StatusRunning {
+			running[record.Type]++
+		} else if record.Status == multiline.StatusPending {
+			pending[record.Type]++
+		}
+	}
+	if running["slow"] != 2 || running["fast"] != 1 || pending["slow"] != 3 || pending["fast"] != 4 || pending["unknown"] != 5 {
+		t.Fatalf("capacity/routing changed queue unexpectedly: running=%v pending=%v", running, pending)
 	}
 }
