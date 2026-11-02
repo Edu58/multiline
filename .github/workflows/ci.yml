@@ -1,0 +1,35 @@
+name: Go
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: multiline_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: test -z "$(gofmt -l $(git ls-files '*.go'))"
+      - run: go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
+      - run: make sqlc && git diff --exit-code -- postgres/internal/dbgen && test -z "$(git ls-files --others --exclude-standard -- postgres/internal/dbgen)"
+      - run: go vet ./...
+      - run: go test -race -count=1 ./...
+      - run: for migration in db/migrations/*.up.sql; do psql "$MULTILINE_TEST_DSN" --single-transaction -v ON_ERROR_STOP=1 -f "$migration"; done
+        env:
+          MULTILINE_TEST_DSN: postgres://postgres:postgres@localhost:5432/multiline_test?sslmode=disable
+      - run: go test -race -tags=integration ./postgres
+        env:
+          MULTILINE_TEST_DSN: postgres://postgres:postgres@localhost:5432/multiline_test?sslmode=disable

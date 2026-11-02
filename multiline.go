@@ -2,166 +2,208 @@ package multiline
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"sync"
 	"time"
-
-	"github.com/Edu58/multiline/internal/timewheel"
-	"github.com/Edu58/multiline/store"
-	"github.com/Edu58/multiline/store/sqlc"
-	"github.com/Edu58/multiline/workers"
-	"github.com/sirupsen/logrus"
 )
 
-type JOBS_RANGE int
+// Options controls resource usage. Zero values select defaults.
+type Options struct {
+	// Concurrency bounds active handlers. Default: four.
+	Concurrency int
+	// PollInterval is the delay after an empty claim. Default: one second.
+	PollInterval time.Duration
+	// CompletionTimeout bounds result persistence after handler exit. Default: five seconds.
+	CompletionTimeout time.Duration
+	// LeaseDuration is renewed every third of its duration. Default: 30 seconds.
+	// Allowed range: 30 milliseconds to 24 hours. Use generous leases in production.
+	LeaseDuration time.Duration
+	// ShutdownGracePeriod allows active handlers to finish after Run's context
+	// is canceled. Zero cancels immediately. Infrastructure errors bypass grace.
+	ShutdownGracePeriod time.Duration
+	// RecoveryInterval controls the separate bounded maintenance loop. Default: one second.
+	RecoveryInterval time.Duration
+	// RecoveryBatchSize bounds expired jobs processed per interval. Default: 100.
+	RecoveryBatchSize int32
+	// Observer receives operational events independently of handler middleware.
+	Observer Observer
+	// Logger optionally reports failed handler attempts.
+	Logger *slog.Logger
+}
 
-const (
-	SECONDS JOBS_RANGE = iota
-	MINUTES
-	HOURS
-)
-
+// Scheduler owns no connections. Run blocks until cancellation and all handlers
+// exit. A scheduler may be run again after Run returns.
 type Scheduler struct {
-	ID             any
-	TimingWheel    *timewheel.TimeWheel
-	store          *store.Store
-	workerRegistry *workers.WorkerRegistry
-	Dispatcher     *workers.Dispatcher
-	PollInterval   time.Duration
-	pollTracker    map[string]int64
-	logger         *logrus.Logger
-	ctx            context.Context
+	repo     Repository
+	attempts attemptRunner
+	opts     Options
+	mu       sync.Mutex
+	running  bool
 }
 
-func NewScheduler(
-	ctx context.Context,
-	id any,
-	pollInterval time.Duration,
-	store *store.Store,
-	workerRegistry *workers.WorkerRegistry,
-	dispatcher *workers.Dispatcher,
-	logger *logrus.Logger,
-) *Scheduler {
-
-	ticker := time.NewTicker(time.Second)
-	now := time.Now().Unix()
-
-	timeWheel := timewheel.NewTimeWheel(ctx, ticker, store, workerRegistry, dispatcher, logger)
-	timeWheel.WithSecondsWheel(timewheel.NewWheel(60, time.Second))
-	timeWheel.WithMinutesWheel(timewheel.NewWheel(60, time.Minute))
-	timeWheel.WithHoursWheel(timewheel.NewWheel(24, time.Hour))
-
-	pollTracker := map[string]int64{
-		"seconds": now,
-		"minutes": now,
-		"hours":   now,
+// NewScheduler validates dependencies and copies the handler map. It starts no
+// goroutines and allocates no timers.
+func NewScheduler(repo Repository, handlers map[string]Handler, opts Options) (*Scheduler, error) {
+	if repo == nil {
+		return nil, &ValidationError{Field: "repository", Reason: "is required"}
 	}
-
-	return &Scheduler{
-		ID:             id,
-		TimingWheel:    timeWheel,
-		store:          store,
-		PollInterval:   pollInterval,
-		pollTracker:    pollTracker,
-		workerRegistry: workerRegistry,
-		Dispatcher:     dispatcher,
-		logger:         logger,
-		ctx:            ctx,
+	if len(handlers) == 0 {
+		return nil, &ValidationError{Field: "handlers", Reason: "at least one is required"}
 	}
+	copied := make(map[string]Handler, len(handlers))
+	for name, h := range handlers {
+		if validateJobType(name) != nil || h == nil {
+			return nil, &ValidationError{Field: "handlers", Reason: "valid nonblank name of at most 20 bytes and function are required"}
+		}
+		copied[name] = h
+	}
+	if opts.Concurrency < 0 || opts.PollInterval < 0 || opts.CompletionTimeout < 0 || opts.LeaseDuration < 0 || opts.ShutdownGracePeriod < 0 || opts.RecoveryInterval < 0 || opts.RecoveryBatchSize < 0 {
+		return nil, &ValidationError{Field: "options", Reason: "must not be negative"}
+	}
+	if opts.Concurrency == 0 {
+		opts.Concurrency = 4
+	}
+	if opts.PollInterval == 0 {
+		opts.PollInterval = time.Second
+	}
+	if opts.CompletionTimeout == 0 {
+		opts.CompletionTimeout = 5 * time.Second
+	}
+	if opts.LeaseDuration == 0 {
+		opts.LeaseDuration = 30 * time.Second
+	}
+	if opts.LeaseDuration < 30*time.Millisecond || opts.LeaseDuration > 24*time.Hour {
+		return nil, &ValidationError{Field: "lease_duration", Reason: "must be between 30 milliseconds and 24 hours"}
+	}
+	if opts.RecoveryInterval == 0 {
+		opts.RecoveryInterval = time.Second
+	}
+	if opts.RecoveryBatchSize == 0 {
+		opts.RecoveryBatchSize = 100
+	}
+	if opts.RecoveryBatchSize > 1000 {
+		return nil, &ValidationError{Field: "recovery_batch_size", Reason: "must be at most 1000"}
+	}
+	s := &Scheduler{repo: repo, opts: opts}
+	s.attempts = attemptRunner{repo: repo, handlers: copied, leaseDuration: opts.LeaseDuration, completionTimeout: opts.CompletionTimeout, observe: s.observe, logger: opts.Logger}
+	return s, nil
 }
 
-func (s *Scheduler) Start() {
-	go s.TimingWheel.Start(s.ctx)
-	go s.Poll()
-}
-
-func (s *Scheduler) Poll() {
-	ticker := time.NewTicker(s.PollInterval)
-
-	for {
-		select {
-		case <-s.ctx.Done():
-			s.logger.Info("canceling new jobs poll")
-			ticker.Stop()
-
-			return
-		case <-ticker.C:
-
-			now := time.Now().Unix()
-
-			if now-s.pollTracker["minutes"] >= 60 {
-				s.GetJobs(MINUTES)
-				s.pollTracker["minutes"] = now
+// Run stops claiming when ctx is canceled, allows configured shutdown grace,
+// then cancels active handlers and waits for their exits and result writes.
+// A handler ignoring cancellation can still delay shutdown indefinitely.
+// Infrastructure failures cancel workers immediately and are returned.
+func (s *Scheduler) Run(ctx context.Context) error {
+	s.mu.Lock()
+	if s.running {
+		s.mu.Unlock()
+		return ErrRunning
+	}
+	s.running = true
+	s.mu.Unlock()
+	defer func() { s.mu.Lock(); s.running = false; s.mu.Unlock() }()
+	claimCtx, stopClaims := context.WithCancel(ctx)
+	defer stopClaims()
+	executionCtx, cancelExecution := context.WithCancel(context.WithoutCancel(ctx))
+	defer cancelExecution()
+	errs := make(chan error, 1)
+	var wg sync.WaitGroup
+	launch := func(fn func() error) {
+		wg.Go(func() {
+			if err := fn(); err != nil {
+				select {
+				case errs <- err:
+				default:
+				}
+				stopClaims()
+				cancelExecution()
 			}
-
-			if now-s.pollTracker["hours"] >= 3600 {
-				s.GetJobs(HOURS)
-				s.pollTracker["hours"] = now
-			}
-
-			s.GetJobs(SECONDS)
-			s.pollTracker["seconds"] = now
-		}
+		})
 	}
-}
-
-func (s *Scheduler) GetJobs(r JOBS_RANGE) {
-	switch r {
-	case MINUTES:
-		jobs, err := s.store.Queries.GetJobsByWindow(s.ctx, sqlc.GetJobsByWindowParams{
-			Status:    new("pending"),
-			StartTime: time.Now().UTC().Add(time.Minute).Add(time.Second),
-			EndTime:   time.Now().UTC().Add(time.Hour),
-		})
-
-		if err != nil {
-			s.logger.WithError(err).Error("error getting next hour(minutes bucket) jobs")
-			s.ctx.Done()
+	for range s.opts.Concurrency {
+		launch(func() error { return s.work(claimCtx, executionCtx) })
+	}
+	launch(func() error { return s.recoverLoop(claimCtx) })
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		if s.opts.ShutdownGracePeriod > 0 {
+			timer := time.NewTimer(s.opts.ShutdownGracePeriod)
+			select {
+			case <-done:
+			case <-timer.C:
+			}
+			timer.Stop()
 		}
-
-		s.AddJobs(jobs)
-
-	case HOURS:
-		jobs, err := s.store.Queries.GetJobsByWindow(s.ctx, sqlc.GetJobsByWindowParams{
-			Status:    new("pending"),
-			StartTime: time.Now().UTC().Add(time.Hour).Add(time.Second),
-			EndTime:   time.Now().UTC().Add(time.Hour * 24),
-		})
-
-		if err != nil {
-			s.logger.WithError(err).Error("error getting next 24 hours(hours bucket) jobs")
-			s.ctx.Done()
-		}
-
-		s.AddJobs(jobs)
+		cancelExecution()
+		<-done
+	}
+	select {
+	case err := <-errs:
+		return err
 	default:
-		jobs, err := s.store.Queries.GetNextMinuteJobs(s.ctx,
-			sqlc.GetNextMinuteJobsParams{
-				Status:  new("pending"),
-				EndTime: time.Now().UTC().Add(time.Minute),
-			})
-
-		if err != nil {
-			s.logger.WithError(err).Error("error getting next minute(seconds bucket) jobs")
-			s.ctx.Done()
-		}
-
-		s.AddJobs(jobs)
+		return ctx.Err()
 	}
 }
 
-func (s *Scheduler) AddJobs(jobs []sqlc.Jobs) {
-	if len(jobs) < 1 {
-		s.logger.Info("0 pending jobs found. skipping...")
-		return
+func (s *Scheduler) work(claimCtx, executionCtx context.Context) error {
+	timer := time.NewTimer(s.opts.PollInterval)
+	defer timer.Stop()
+	for {
+		if claimCtx.Err() != nil {
+			return nil
+		}
+		started := time.Now()
+		claim, err := s.repo.Claim(claimCtx, s.opts.LeaseDuration)
+		if claimCtx.Err() != nil && err != nil {
+			return nil
+		}
+		if errors.Is(err, ErrNoJob) {
+			timer.Reset(s.opts.PollInterval)
+			select {
+			case <-claimCtx.Done():
+				return nil
+			case <-timer.C:
+			}
+			continue
+		}
+		if err != nil {
+			s.observe(Event{Kind: EventClaimFailed, Duration: time.Since(started), Err: err})
+			return fmt.Errorf("multiline: claim job: %w", err)
+		}
+		s.observe(Event{Kind: EventClaimed, JobID: claim.Execution.ID, Attempt: claim.Execution.Attempt, Duration: time.Since(started)})
+		if err := s.attempts.run(executionCtx, claim); err != nil {
+			return err
+		}
 	}
+}
 
-	s.logger.Infof("Adding %d jobs to timewheel", len(jobs))
-
-	for _, job := range jobs {
-		s.TimingWheel.AddJob(&timewheel.Job{
-			Id:         job.ID,
-			JobType:    job.Type,
-			Payload:    job.Payload,
-			Expiration: job.NextRunTime.Unix(),
-		})
+func (s *Scheduler) recoverLoop(ctx context.Context) error {
+	timer := time.NewTimer(s.opts.RecoveryInterval)
+	defer timer.Stop()
+	for {
+		if ctx.Err() != nil {
+			return nil
+		}
+		started := time.Now()
+		recovered, err := s.repo.Recover(ctx, s.opts.RecoveryBatchSize)
+		if ctx.Err() != nil && err != nil {
+			return nil
+		}
+		if err != nil {
+			s.observe(Event{Kind: EventRecoveryFailed, Duration: time.Since(started), Err: err})
+			return fmt.Errorf("multiline: recover jobs: %w", err)
+		}
+		s.observe(Event{Kind: EventRecovered, Duration: time.Since(started), Recovery: recovered})
+		timer.Reset(s.opts.RecoveryInterval)
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-timer.C:
+		}
 	}
 }
