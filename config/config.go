@@ -5,8 +5,6 @@ import (
 )
 
 type Config struct {
-	HOST           string            `mapstructure:"host"`
-	PORT           string            `mapstructure:"port"`
 	RABBITMQ_URL   string            `mapstructure:"rabbitmq_url"`
 	DSN_URL        string            `mapstructure:"dsn_url"`
 	DSN_OPTIONS    string            `mapstructure:"dsn_options"`
@@ -20,9 +18,6 @@ func LoadConfig(dir string, configName string, configType string) (config Config
 	viper.SetConfigName(configName)
 	viper.AddConfigPath(dir)
 	viper.SetConfigType(configType)
-
-	viper.SetDefault("HOST", "localhost")
-	viper.SetDefault("PORT", "4000")
 
 	viper.AutomaticEnv()
 

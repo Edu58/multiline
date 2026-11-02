@@ -1,15 +1,13 @@
-package scheduler
+package multiline
 
 import (
 	"context"
-	"fmt"
 	"time"
 
-	// "github.com/Edu58/multiline/internal/ptr"
-	"github.com/Edu58/multiline/internal/queues/rabbitmq"
-	"github.com/Edu58/multiline/internal/store"
-	"github.com/Edu58/multiline/internal/store/sqlc"
-	"github.com/Edu58/multiline/internal/workers"
+	"github.com/Edu58/multiline/internal/timewheel"
+	"github.com/Edu58/multiline/store"
+	"github.com/Edu58/multiline/store/sqlc"
+	"github.com/Edu58/multiline/workers"
 	"github.com/sirupsen/logrus"
 )
 
@@ -23,9 +21,7 @@ const (
 
 type Scheduler struct {
 	ID             any
-	ShardID        any
-	TimingWheel    *TimeWheel
-	queue          *rabbitmq.Queue
+	TimingWheel    *timewheel.TimeWheel
 	store          *store.Store
 	workerRegistry *workers.WorkerRegistry
 	Dispatcher     *workers.Dispatcher
@@ -38,22 +34,20 @@ type Scheduler struct {
 func NewScheduler(
 	ctx context.Context,
 	id any,
-	shardID any,
 	pollInterval time.Duration,
 	store *store.Store,
 	workerRegistry *workers.WorkerRegistry,
 	dispatcher *workers.Dispatcher,
-	queue *rabbitmq.Queue,
 	logger *logrus.Logger,
 ) *Scheduler {
 
 	ticker := time.NewTicker(time.Second)
 	now := time.Now().Unix()
 
-	timeWheel := NewTimeWheel(ctx, ticker, store, queue, workerRegistry, dispatcher, logger)
-	timeWheel.WithSecondsWheel(NewWheel(60, time.Second))
-	timeWheel.WithMinutesWheel(NewWheel(60, time.Minute))
-	timeWheel.WithHoursWheel(NewWheel(24, time.Hour))
+	timeWheel := timewheel.NewTimeWheel(ctx, ticker, store, workerRegistry, dispatcher, logger)
+	timeWheel.WithSecondsWheel(timewheel.NewWheel(60, time.Second))
+	timeWheel.WithMinutesWheel(timewheel.NewWheel(60, time.Minute))
+	timeWheel.WithHoursWheel(timewheel.NewWheel(24, time.Hour))
 
 	pollTracker := map[string]int64{
 		"seconds": now,
@@ -63,7 +57,6 @@ func NewScheduler(
 
 	return &Scheduler{
 		ID:             id,
-		ShardID:        shardID,
 		TimingWheel:    timeWheel,
 		store:          store,
 		PollInterval:   pollInterval,
@@ -140,9 +133,6 @@ func (s *Scheduler) GetJobs(r JOBS_RANGE) {
 
 		s.AddJobs(jobs)
 	default:
-		fmt.Println("sdfsdfsdf =>", r)
-		fmt.Printf("End Time is %v\n", time.Now().UTC().Add(time.Hour).String())
-
 		jobs, err := s.store.Queries.GetNextMinuteJobs(s.ctx,
 			sqlc.GetNextMinuteJobsParams{
 				Status:  new("pending"),
@@ -167,7 +157,7 @@ func (s *Scheduler) AddJobs(jobs []sqlc.Jobs) {
 	s.logger.Infof("Adding %d jobs to timewheel", len(jobs))
 
 	for _, job := range jobs {
-		s.TimingWheel.AddJob(&Job{
+		s.TimingWheel.AddJob(&timewheel.Job{
 			Id:         job.ID,
 			JobType:    job.Type,
 			Payload:    job.Payload,

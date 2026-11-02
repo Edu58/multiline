@@ -4,7 +4,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/Edu58/multiline/internal/store/sqlc"
+	"github.com/Edu58/multiline/store/sqlc"
 	validation "github.com/go-ozzo/ozzo-validation/v4"
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -18,7 +18,6 @@ func ListJobs(arg sqlc.ListJobsParams) error {
 func CreateJob(arg sqlc.CreateOrUpdateJobParams) error {
 	return validation.ValidateStruct(&arg,
 		validation.Field(&arg.Type, validation.Required),
-		validation.Field(&arg.ShardID, validation.Required),
 		validation.Field(&arg.NextRunTime, validation.Required,
 			validation.By(validateNextRuntime),
 		),

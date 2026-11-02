@@ -18,7 +18,11 @@ func NewDispatcher(c *config.Config, r *WorkerRegistry) (*Dispatcher, error) {
 		return nil, errors.New("registry cannot be nil")
 	}
 
-	for name, _ := range c.WORKERS {
+	if c == nil {
+		return nil, errors.New("config cannot be nil")
+	}
+
+	for _, name := range c.WORKERS {
 		if _, exists := r.workers[name]; !exists {
 			return nil, fmt.Errorf("worker %s not registered", name)
 		}

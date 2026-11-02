@@ -1,4 +1,4 @@
-package scheduler
+package timewheel
 
 // import (
 // 	"context"
@@ -7,7 +7,7 @@ package scheduler
 // 	"time"
 
 // 	"github.com/Edu58/multiline/config"
-// 	"github.com/Edu58/multiline/internal/store"
+// 	"github.com/Edu58/multiline/store"
 // 	"github.com/Edu58/multiline/pkg/logger"
 // 	"github.com/sirupsen/logrus"
 // 	"github.com/stretchr/testify/assert"

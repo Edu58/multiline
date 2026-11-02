@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/Edu58/multiline/internal/store/sqlc"
+	"github.com/Edu58/multiline/store/sqlc"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sirupsen/logrus"

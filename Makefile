@@ -1,4 +1,4 @@
-.PHONY: server migrate force_migrate fmt
+.PHONY: build test race migrate force_migrate fmt sqlc
 
 fmt:
 	go fmt ./...
@@ -6,20 +6,20 @@ fmt:
 test:
 	go test -v -cover ./...
 
-server:
-	go run ./cmd/api/main.go
+build:
+	go build ./...
 
 race:
 	go test -race ./...
 
 migrate:
 	migrate -database postgresql://postgres:postgres@localhost:5432/multiline_dev?sslmode=disable \
-	-path ./internal/db/migrations/ \
+	-path ./db/migrations/ \
 	-verbose $(where)
 
 force_migrate:
 	migrate -database postgresql://postgres:postgres@localhost:5432/multiline_dev?sslmode=disable \
-	-path ./internal/db/migrations/ \
+	-path ./db/migrations/ \
 	-verbose force 1
 
 sqlc:

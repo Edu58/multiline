@@ -1,5 +1,5 @@
-// Package scheduler implements a scheduler using the time wheel algorithm
-package scheduler
+// Package multiline implements a scheduler using the time wheel algorithm
+package timewheel
 
 import (
 	"container/list"
@@ -9,9 +9,8 @@ import (
 	"log"
 	"time"
 
-	"github.com/Edu58/multiline/internal/queues/rabbitmq"
-	"github.com/Edu58/multiline/internal/store"
-	"github.com/Edu58/multiline/internal/workers"
+	"github.com/Edu58/multiline/store"
+	"github.com/Edu58/multiline/workers"
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 )
@@ -51,7 +50,6 @@ type Wheel struct {
 type TimeWheel struct {
 	store          *store.Store
 	logger         *logrus.Logger
-	queue          *rabbitmq.Queue
 	hours          *Wheel
 	minutes        *Wheel
 	seconds        *Wheel
@@ -117,11 +115,10 @@ func (w *Wheel) AddJob(j *Job) {
 	w.buckets[pos].AddJob(j)
 }
 
-func NewTimeWheel(ctx context.Context, ticker *time.Ticker, store *store.Store,
-	queue *rabbitmq.Queue, workerRegistry *workers.WorkerRegistry,
+func NewTimeWheel(ctx context.Context, ticker *time.Ticker, store *store.Store, workerRegistry *workers.WorkerRegistry,
 	dispatcher *workers.Dispatcher, logger *logrus.Logger, opts ...SchedulerOpts) *TimeWheel {
 
-	timewheel := &TimeWheel{ctx: ctx, tick: ticker, queue: queue, store: store, workerRegistry: workerRegistry, Dispatcher: dispatcher, logger: logger}
+	timewheel := &TimeWheel{ctx: ctx, tick: ticker, store: store, workerRegistry: workerRegistry, Dispatcher: dispatcher, logger: logger}
 
 	for _, opt := range opts {
 		opt(timewheel)
@@ -178,7 +175,7 @@ func (tw *TimeWheel) Tick(wheel *Wheel) {
 		// If not, we cascade the job/reassign
 		if wheel.lower == nil {
 			go func(j *Job) {
-				tw.queue.MsgsChan <- map[string]any{"id": j.Id, "payload": j.Payload, "exp": j.Expiration}
+				// tw.queue.MsgsChan <- map[string]any{"id": j.Id, "payload": j.Payload, "exp": j.Expiration}
 
 				if err := tw.Dispatcher.HandleJob(tw.ctx, &workers.Job{
 					Id:         j.Id,

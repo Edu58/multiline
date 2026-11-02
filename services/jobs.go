@@ -4,20 +4,20 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/Edu58/multiline/internal/scheduler"
-	"github.com/Edu58/multiline/internal/store"
-	"github.com/Edu58/multiline/internal/store/sqlc"
-	"github.com/Edu58/multiline/internal/store/validations"
+	"github.com/Edu58/multiline"
+	"github.com/Edu58/multiline/internal/validations"
+	"github.com/Edu58/multiline/store"
+	"github.com/Edu58/multiline/store/sqlc"
 	"github.com/sirupsen/logrus"
 )
 
 type JobsService struct {
 	store     *store.Store
-	scheduler *scheduler.Scheduler
+	scheduler *multiline.Scheduler
 	logger    *logrus.Logger
 }
 
-func NewJobsService(store *store.Store, scheduler *scheduler.Scheduler, logger *logrus.Logger) *JobsService {
+func NewJobsService(store *store.Store, scheduler *multiline.Scheduler, logger *logrus.Logger) *JobsService {
 	return &JobsService{store, scheduler, logger}
 }
 

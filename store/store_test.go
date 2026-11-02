@@ -9,11 +9,10 @@ import (
 
 	"github.com/Edu58/multiline/config"
 	"github.com/Edu58/multiline/internal/ptr"
-	"github.com/Edu58/multiline/internal/store/sqlc"
-	store "github.com/Edu58/multiline/internal/store/sqlc"
 	"github.com/Edu58/multiline/pkg/logger"
 	"github.com/Edu58/multiline/pkg/strings"
-	"github.com/google/uuid"
+	"github.com/Edu58/multiline/store/sqlc"
+	store "github.com/Edu58/multiline/store/sqlc"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -29,7 +28,10 @@ func TestMain(m *testing.M) {
 	ctx := context.Background()
 
 	var err error
-	testConfig, err = config.LoadConfig("../../", "app", "env")
+	testConfig.DSN_URL = os.Getenv("MULTILINE_TEST_DSN")
+	if testConfig.DSN_URL == "" {
+		log.Fatal("MULTILINE_TEST_DSN must be set for integration tests")
+	}
 
 	if err != nil {
 		log.Fatalf("failed to create store: %v", err)
@@ -98,20 +100,18 @@ func TestStore(t *testing.T) {
 
 		err := testStore.WithTx(context.Background(), func(q *sqlc.Queries) error {
 
-			jobId := uuid.New()
-
-			_, err := q.CreateOrUpdateJob(context.Background(), store.CreateOrUpdateJobParams{
+			createdJob, err := q.CreateOrUpdateJob(context.Background(), store.CreateOrUpdateJobParams{
+				Type:        "test",
 				Name:        ptr.Of("Test Job 1"),
 				Schedule:    ptr.Of("0 * * * *"),
 				NextRunTime: time.Now().UTC(),
-				ShardID:     1,
 			})
 
 			if err != nil {
 				return err
 			}
 
-			_, err = q.GetJob(context.Background(), jobId)
+			_, err = q.GetJob(context.Background(), createdJob.ID)
 			return err
 		})
 
